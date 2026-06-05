@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+profiles/*/fixtures/
+fixtures-preview/
+*.mzpeak

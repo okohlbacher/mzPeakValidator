@@ -1,0 +1,14 @@
+{
+  "file": "spectra_data",
+  "note": "point layout. chunk/numpress layouts carry a `chunk` facet instead; point columns are optional so those layouts are not false-failed (their decoding is a v1 TODO).",
+  "facets": {
+    "point": {
+      "required": false,
+      "columns": {
+        "spectrum_index": {"type": "uint", "required": false},
+        "mz": {"type": "double", "required": false},
+        "intensity": {"type": "float", "required": false}
+      }
+    }
+  }
+}

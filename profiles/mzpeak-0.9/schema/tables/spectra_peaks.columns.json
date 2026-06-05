@@ -1,0 +1,13 @@
+{
+  "file": "spectra_peaks",
+  "facets": {
+    "point": {
+      "required": false,
+      "columns": {
+        "spectrum_index": {"type": "uint", "required": false},
+        "mz": {"type": "double", "required": false},
+        "intensity": {"type": "float", "required": false}
+      }
+    }
+  }
+}

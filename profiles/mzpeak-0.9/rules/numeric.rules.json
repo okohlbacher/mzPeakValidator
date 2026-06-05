@@ -1,0 +1,22 @@
+{
+  "rules": [
+    {"id": "spectrum_count_agreement", "primitive": "footer_count_equals_rows", "severity": "error", "recovery": "rederive", "params": {"file": "spectra_metadata", "footer_key": "spectrum_count"}},
+    {"id": "data_points_sum", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive", "params": {"file": "spectra_data", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003060_number_of_data_points", "guard": "point.intensity"}},
+
+    {"id": "mz_finite_data", "primitive": "column_predicate", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.mz", "op": "finite"}},
+    {"id": "intensity_nonneg_data", "primitive": "column_predicate", "severity": "error", "recovery": "normalize", "params": {"file": "spectra_data", "column": "point.intensity", "op": "ge", "value": 0}},
+    {"id": "intensity_nonneg_peaks", "primitive": "column_predicate", "severity": "error", "recovery": "normalize", "params": {"file": "spectra_peaks", "column": "point.intensity", "op": "ge", "value": 0}},
+
+    {"id": "mz_monotonic_data", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair", "params": {"file": "spectra_data", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
+    {"id": "mz_monotonic_peaks", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair", "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
+
+    {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double"]}},
+    {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.mz", "role": "m/z", "allowed": ["double", "float"]}},
+
+    {"id": "point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+    {"id": "point_fk_peaks", "primitive": "foreign_key", "severity": "error", "recovery": "none", "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+    {"id": "scan_source_index_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild", "params": {"file": "spectra_metadata", "column": "scan.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+
+    {"id": "spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none", "params": {"file": "spectra_metadata", "column": "spectrum.index"}}
+  ]
+}

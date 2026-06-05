@@ -1,0 +1,5 @@
+{
+  "rules": [
+    {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none", "params": {}}
+  ]
+}

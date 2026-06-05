@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "mzpeak_index",
+  "type": "object",
+  "required": ["files", "metadata"],
+  "properties": {
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "entity_type", "data_kind"],
+        "properties": {
+          "name": {"type": "string"},
+          "entity_type": {"type": "string", "enum": ["spectrum", "mass spectrum", "chromatogram", "wavelength spectrum", "image", "other"]},
+          "data_kind": {"type": "string", "enum": ["metadata", "data arrays", "peaks", "other"]}
+        }
+      }
+    },
+    "metadata": {"type": "object"}
+  }
+}

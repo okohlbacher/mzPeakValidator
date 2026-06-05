@@ -1,0 +1,9 @@
+{
+  "rules": [
+    {"id": "index_files_present", "primitive": "index_files_present", "severity": "error", "recovery": "rebuild"},
+    {"id": "data_kind_has_facet", "primitive": "data_kind_facet", "severity": "error", "recovery": "none", "params": {"data_kinds": ["data arrays", "peaks"], "facets": ["point", "chunk"], "entity_types": ["spectrum", "mass spectrum"]}},
+    {"id": "columns_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none", "params": {"file": "spectra_metadata"}},
+    {"id": "columns_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none", "params": {"file": "spectra_data"}},
+    {"id": "columns_spectra_peaks", "primitive": "columns_present", "severity": "error", "recovery": "none", "params": {"file": "spectra_peaks"}}
+  ]
+}

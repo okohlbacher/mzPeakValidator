@@ -1,0 +1,21 @@
+{
+  "file": "spectra_metadata",
+  "facets": {
+    "spectrum": {
+      "required": true,
+      "columns": {
+        "index": {"type": "uint", "required": true},
+        "MS_1000511_ms_level": {"type": "integer", "required": false},
+        "MS_1000525_spectrum_representation": {"type": "string", "required": false},
+        "MS_1003060_number_of_data_points": {"type": "uint", "required": false},
+        "MS_1003059_number_of_peaks": {"type": "uint", "required": false}
+      }
+    },
+    "scan": {
+      "required": true,
+      "columns": {"source_index": {"type": "uint", "required": true}}
+    },
+    "precursor": {"required": false, "columns": {"source_index": {"type": "uint", "required": true}}},
+    "selected_ion": {"required": false, "columns": {"source_index": {"type": "uint", "required": true}}}
+  }
+}

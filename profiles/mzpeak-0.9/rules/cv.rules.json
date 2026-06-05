@@ -1,0 +1,6 @@
+{
+  "rules": [
+    {"id": "cv_inflection_spectra_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none", "params": {"file": "spectra_metadata"}},
+    {"id": "cv_inflection_chromatograms_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none", "params": {"file": "chromatograms_metadata"}}
+  ]
+}
