@@ -44,7 +44,10 @@ docs/validation-design.md    # the design (profiles, primitive catalog, auto-rep
 Structural (archive + index ↔ files, `data_kind` ⇒ signal facet, column types), CV
 (codes declared & resolvable in the pinned OBOs, inflection well-formed), numeric
 (per-spectrum point-count agreement, m/z monotonic & finite, intensity ≥ 0,
-dtype-vs-role, FK resolution), and imaging (1-based coordinates). Findings carry an
+dtype-vs-role, FK resolution), and imaging (1-based coordinates; embedded optical
+images — declared `metadata.imaging.images[]` members exist, their `sha256`/`size_bytes`
+match the stored bytes, and `image/tiff` members carry a TIFF magic number — these
+image checks are warning-level, since optical images are auxiliary). Findings carry an
 example offending value/row; identical messages are collated and per-rule volume is
 capped so a single rule can't flood the log.
 

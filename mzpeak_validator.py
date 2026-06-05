@@ -17,7 +17,7 @@ Usage:
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """
-import argparse, gzip, json, os, re, sys, tempfile, zipfile
+import argparse, gzip, hashlib, json, os, re, sys, tempfile, zipfile
 from pathlib import Path
 
 try:
@@ -28,7 +28,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow is required (pip install pyarrow):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.0"
+CATALOG_VERSION = "1.1"          # 1.1 adds the raw-member image primitives (member_exists/blob_hash/tiff_magic)
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -63,6 +63,15 @@ class Archive:
 
     def has_file(self, name):
         return (self.root / self._fname(name)).is_file()
+
+    def has_member(self, name):
+        """Is `name` present as a raw archive member (verbatim path, not parquet-resolved)?"""
+        return bool(name) and (self.root / name).is_file()
+
+    def read_member(self, name, n=None):
+        """Raw bytes of an archive member (first `n` bytes if given)."""
+        with open(self.root / name, "rb") as fh:
+            return fh.read() if n is None else fh.read(n)
 
     def pf(self, name):
         fn = self._fname(name)
@@ -408,6 +417,75 @@ def p_imaging_coordinates(ar, rule, rep, params):
             rep.add(rule, "error", f"{f}.{path}: minimum coordinate {np.nanmin(v):g} < 1 "
                     f"(imaging coordinates must be 1-based)", {"file": f, "column": path})
 
+# --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
+TIFF_MAGIC = (b"II*\x00", b"MM\x00*")            # little/big-endian baseline TIFF (and BigTIFF shares II*/MM* prefixes)
+
+def _dig(obj, dotted):
+    """Walk a dotted path through nested dicts; None if any hop is absent/non-dict."""
+    cur = obj
+    for part in dotted.split("."):
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(part)
+    return cur
+
+def _image_entries(ar, params):
+    """The declared image list (default metadata.imaging.images) as [(i, entry, member_name), ...]."""
+    if not ar.index:
+        return []
+    lst = _dig(ar.index, params.get("list", "metadata.imaging.images"))
+    if not isinstance(lst, list):
+        return []
+    field = params.get("member", "archive_path")
+    return [(i, e, e.get(field)) for i, e in enumerate(lst) if isinstance(e, dict)]
+
+def p_member_exists(ar, rule, rep, params):
+    """Each declared image references an archive member that is actually present."""
+    sev = rule.get("severity", "warning")
+    field = params.get("member", "archive_path")
+    for i, e, name in _image_entries(ar, params):
+        if not name:
+            rep.add(rule, sev, f"images[{i}] declares no '{field}' member name")
+        elif not ar.has_member(name):
+            rep.add(rule, sev, f"declared image member '{name}' (images[{i}]) is not present in the archive",
+                    {"file": name})
+
+def p_blob_hash(ar, rule, rep, params):
+    """A present image member's bytes match its declared digest (and size, if declared)."""
+    sev = rule.get("severity", "warning")
+    algo = params.get("algo", "sha256")
+    hash_field, size_field = params.get("hash_field", "sha256"), params.get("size_field", "size_bytes")
+    for i, e, name in _image_entries(ar, params):
+        if not ar.has_member(name):                   # absence is p_member_exists' concern, not ours
+            continue
+        data = ar.read_member(name)
+        size = e.get(size_field)
+        if size is not None and int(size) != len(data):
+            rep.add(rule, sev, f"image member '{name}': {len(data)} bytes on disk != declared {size_field}={size}",
+                    {"file": name}, recovery="recompute")
+        declared = e.get(hash_field)
+        if declared:
+            actual = hashlib.new(algo, data).hexdigest()
+            if actual.lower() != str(declared).lower():
+                rep.add(rule, sev, f"image member '{name}': {algo} mismatch (declared {declared}, actual {actual})",
+                        {"file": name}, recovery="recompute")
+
+def p_tiff_magic(ar, rule, rep, params):
+    """A member declared image/tiff begins with a TIFF magic number."""
+    sev = rule.get("severity", "warning")
+    mt_field, want_mt = params.get("media_type_field", "media_type"), params.get("media_type", "image/tiff")
+    for i, e, name in _image_entries(ar, params):
+        if not ar.has_member(name):
+            continue
+        mt = e.get(mt_field)
+        applies = (mt == want_mt) if mt is not None else str(name).lower().endswith((".tif", ".tiff"))
+        if not applies:
+            continue
+        head = ar.read_member(name, 4)
+        if head not in TIFF_MAGIC:
+            rep.add(rule, sev, f"image member '{name}' declared {want_mt} but is not a TIFF "
+                    f"(first 4 bytes {head!r}; expected b'II*\\x00' or b'MM\\x00*')", {"file": name})
+
 PRIMITIVES = {
     "index_files_present": p_index_files_present, "columns_present": p_columns_present,
     "data_kind_facet": p_data_kind_facet,
@@ -415,8 +493,11 @@ PRIMITIVES = {
     "dtype_role": p_dtype_role, "grouped_monotonic": p_grouped_monotonic, "foreign_key": p_foreign_key,
     "index_contiguous": p_index_contiguous, "cv_inflection": p_cv_inflection,
     "count_sum_equals_rows": p_count_sum_equals_rows, "imaging_coordinates": p_imaging_coordinates,
+    "member_exists": p_member_exists, "blob_hash": p_blob_hash, "tiff_magic": p_tiff_magic,
 }
-DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous", "count_sum_equals_rows"}
+# blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
+DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
+             "count_sum_equals_rows", "blob_hash"}
 
 # -------------------------------------------------------------------------------- run
 def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):

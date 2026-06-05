@@ -39,12 +39,13 @@ MZPEAK_CORPUS=/dir/of/mzpeak python smoke_test.py
 
 ## 3. The v0.9 rule set (what it actually checks)
 
-~18 rules over the primitive catalog. Primitives: `index_files_present, data_kind_facet, columns_present, footer_count_equals_rows, column_predicate (ge/gt/le/lt/finite), dtype_role, grouped_monotonic, foreign_key, index_contiguous, cv_inflection, count_sum_equals_rows, imaging_coordinates`.
+~21 rules over the primitive catalog (**catalog v1.1**). Primitives: `index_files_present, data_kind_facet, columns_present, footer_count_equals_rows, column_predicate (ge/gt/le/lt/finite), dtype_role, grouped_monotonic, foreign_key, index_contiguous, cv_inflection, count_sum_equals_rows, imaging_coordinates`, plus the **v1.1 raw-member image primitives** `member_exists, blob_hash, tiff_magic` (operate on archive members, not Parquet).
 
 - **structural**: archive opens; every indexed file exists/opens; a file whose `data_kind` is signal must carry a `point` or `chunk` facet; column names/types match the column schemas.
 - **cv**: every inflected `${CV}_${ACC}_…` column's CV code is declared & the accession resolves in the pinned OBO (unknown code = error, unknown accession = warning).
 - **numeric**: `spectrum_count` footer == metadata rows; `sum(number_of_data_points) == spectra_data rows` (point layout); m/z monotonic non-decreasing per spectrum; m/z finite (no NaN/inf *values*); intensity ≥ 0; dtype-vs-role (intensity⇒float, m/z⇒double); `point.spectrum_index`/`scan.source_index` FK resolve; spectrum.index 0-based contiguous (warning).
 - **imaging** (only if archive is imaging): `IMS_1000050/51` present (X *and* Y independently) and 1-based.
+- **imaging — embedded optical images** (catalog v1.1; warning-level per the imaging-spec V2, since optical images are auxiliary and outside the spectral L1 contract): each `metadata.imaging.images[]` entry's `archive_path` member exists (`member_exists`); its bytes match the declared `sha256` + `size_bytes` (`blob_hash`, recovery `recompute`); and an `image/tiff` member starts with a TIFF magic number `II*\0`/`MM\0*` (`tiff_magic`). Grounded in `imzML2mzPeak/docs/mzpeak-imaging-spec-suggestions.md` Edits 7–8 (TIFF-as-ZIP-member, `images/image_NNNN.tiff`). Fixtures: `imaging_with_optical_image` (pass) + `imaging_{missing_image,image_hash_mismatch,image_not_tiff}` (warn). `smoke_test.py`/`make_fixtures.py` gained a `warn_rule` assertion path for warning-level fixtures.
 
 Messages are "speaking" (example offending value + row, the actual columns found, role names). Findings are **collated**: identical messages collapse to `(xN)`; per-rule volume caps at **25** then a single "+N suppressed" summary (prevents log floods).
 

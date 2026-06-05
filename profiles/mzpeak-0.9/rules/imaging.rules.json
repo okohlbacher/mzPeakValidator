@@ -1,5 +1,11 @@
 {
   "rules": [
-    {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none", "params": {}}
+    {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none", "params": {}},
+    {"id": "image_member_present", "primitive": "member_exists", "severity": "warning", "recovery": "none",
+     "params": {"list": "metadata.imaging.images", "member": "archive_path"}},
+    {"id": "image_blob_hash", "primitive": "blob_hash", "severity": "warning", "recovery": "recompute",
+     "params": {"list": "metadata.imaging.images", "member": "archive_path", "algo": "sha256", "hash_field": "sha256", "size_field": "size_bytes"}},
+    {"id": "image_tiff_magic", "primitive": "tiff_magic", "severity": "warning", "recovery": "none",
+     "params": {"list": "metadata.imaging.images", "member": "archive_path", "media_type_field": "media_type", "media_type": "image/tiff"}}
   ]
 }

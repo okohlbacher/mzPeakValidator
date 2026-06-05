@@ -26,6 +26,9 @@ def corpus_dirs():
 def err_rules(rep):
     return [f["ruleId"] for f in rep["findings"] if f["level"] == "error"]
 
+def warn_rules(rep):
+    return [f["ruleId"] for f in rep["findings"] if f["level"] == "warning"]
+
 def short(rep):
     s = rep["summary"]; return f"{rep['verdict']} ({s['errors']}E/{s['warnings']}W)"
 
@@ -40,10 +43,12 @@ def main():
             exp = json.load(open(exp_path))
             rep = run(d)
             name = os.path.relpath(d, tmp)
-            passed = rep["verdict"] == exp["verdict"] and (
-                exp["verdict"] != "FAIL" or exp.get("rule") in err_rules(rep))
+            passed = (rep["verdict"] == exp["verdict"]
+                      and (exp["verdict"] != "FAIL" or exp.get("rule") in err_rules(rep))
+                      and (not exp.get("warn_rule") or exp["warn_rule"] in warn_rules(rep)))
             ok = ok and passed
-            extra = "" if passed else f"   <-- expected {exp['verdict']}/{exp.get('rule')}, got {short(rep)} {err_rules(rep)}"
+            want = exp.get("rule") or exp.get("warn_rule")
+            extra = "" if passed else f"   <-- expected {exp['verdict']}/{want}, got {short(rep)} E{err_rules(rep)} W{warn_rules(rep)}"
             print(f"  [{'ok ' if passed else 'FAIL'}] {name:28} {short(rep)}{extra}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
