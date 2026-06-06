@@ -1,4 +1,4 @@
 # Ensure the full profile bundle and docs travel in the source distribution.
 recursive-include mzpeak_validator/profiles *
-include README.md CLAUDE.md requirements.txt
+include README.md CLAUDE.md requirements.txt LICENSE
 recursive-include docs *.md

@@ -9,10 +9,12 @@ description = "Language-independent-by-design validator for the HUPO-PSI mzPeak 
 readme = "README.md"
 requires-python = ">=3.7"
 authors = [{name = "Oliver Kohlbacher", email = "okohlbacher@googlemail.com"}]
+license = {text = "MIT"}
 keywords = ["mzPeak", "mass-spectrometry", "HUPO-PSI", "proteomics", "imaging-MS", "validation", "parquet"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
   "Topic :: Scientific/Engineering :: Bio-Informatics",
   "Programming Language :: Python :: 3",
 ]
