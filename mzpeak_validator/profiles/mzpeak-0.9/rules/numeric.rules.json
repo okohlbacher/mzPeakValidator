@@ -7,19 +7,19 @@
     "null_semantics": "Arrow nulls are LEGITIMATE (sparse/null-marking): m/z and number_of_data_points may be null. Rules treat nulls as OK (counts as 0; skipped in monotonic/finite). Only genuine NaN/inf VALUES are flagged (see mz_finite_data). Do not 'fix' a rule to reject nulls.",
     "how_to_amend": "Each rule instantiates a primitive in mzpeak_validator.py. Copy a rule and edit params to retarget a column/table; the engine reads only id/primitive/severity/recovery/params. 'about'/'doc' are ignored.",
     "primitives": {
-      "footer_count_equals_rows": "params: file, footer_key. Compares the Parquet key-value-metadata footer int to actual row count. Absent footer -> warning; non-int -> error; mismatch -> error.",
+      "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.",
       "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
       "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
       "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
       "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
-      "foreign_key": "params: file, column, ref_file, ref_column. Every non-null child value must exist in the parent column; nulls in the child are also flagged.",
-      "index_contiguous": "params: file, column, [severity]. The column must equal 0,1,2,...,n-1."
+      "foreign_key": "params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).",
+      "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored)."
     }
   },
   "rules": [
     {"id": "spectrum_count_agreement", "primitive": "footer_count_equals_rows", "severity": "error", "recovery": "rederive",
-     "doc": "spectra_metadata footer 'spectrum_count' equals its row count. This is the ONE footer count the reference writer fills reliably for plain LC-MS; ion-mobility (TIMS) writers can disagree (frames vs expanded scans) -- a real upstream finding, not a validator bug. recovery=rederive: the true count is the row count. Only this footer is trusted; per-data-point totals are checked by data_points_sum instead.",
-     "params": {"file": "spectra_metadata", "footer_key": "spectrum_count"}},
+     "doc": "spectra_metadata footer 'spectrum_count' equals the number of spectra = non-null spectrum.index entries (count_column). NOT total rows: in the packed parallel-facet layout the table is as long as its longest facet, so a PASEF/TIMS run with many precursors per MS2 spectrum has far more rows than spectra (e.g. SBA415: 278942 rows, 44296 spectra). Counting non-null spectrum.index makes the footer agree for both plain LC-MS and packed layouts. recovery=rederive: the true count is derivable.",
+     "params": {"file": "spectra_metadata", "footer_key": "spectrum_count", "count_column": "spectrum.index"}},
 
     {"id": "data_points_sum", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive",
      "doc": "Point-layout integrity: sum of per-spectrum number_of_data_points equals the spectra_data row count. 'guard' point.intensity gates this to the point layout (skips chunk/numpress). Null counts (centroid spectra) count as 0. Preferred over a footer check because the writer's spectra_data footer is unreliable.",
@@ -46,11 +46,11 @@
      "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
 
     {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.intensity is a floating type (float or double), never integer. PERMISSIVE on width (both allowed); the STRICT per-schema expectation lives in spectra_data.columns.json / columns_spectra_data. Edit allowed[] to broaden/narrow accepted types.",
+     "doc": "spectra_data point.intensity is a floating type (float or double), never integer. Width-agnostic, matching the relaxed column schema (both 32- and 64-bit accepted). Edit allowed[] to broaden/narrow accepted types.",
      "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double"]}},
 
     {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.mz is a floating type. Also permissive on width (double or float); the column schema pins double, so 32-bit m/z fails there (columns_spectra_data), not here. This split lets you keep the hard 'must be float-not-int' check while debating width separately (HUPO-PSI #11).",
+     "doc": "spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json.",
      "params": {"file": "spectra_data", "column": "point.mz", "role": "m/z", "allowed": ["double", "float"]}},
 
     {"id": "point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
@@ -62,11 +62,11 @@
      "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
 
     {"id": "scan_source_index_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "scan.source_index resolves to a spectrum.index (both columns live in spectra_metadata). recovery=rebuild: the scan<->spectrum map is derivable.",
-     "params": {"file": "spectra_metadata", "column": "scan.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+     "doc": "scan.source_index resolves to a spectrum.index (both in spectra_metadata). allow_null=true: in the packed parallel-facet layout the scan facet is null on rows owned by another facet (e.g. precursor-only PASEF rows), so child nulls are expected and not flagged. recovery=rebuild: the scan<->spectrum map is derivable.",
+     "params": {"file": "spectra_metadata", "column": "scan.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
 
     {"id": "spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
-     "doc": "spectrum.index is 0-based contiguous (0..n-1). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
+     "doc": "spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
      "params": {"file": "spectra_metadata", "column": "spectrum.index"}}
   ]
 }

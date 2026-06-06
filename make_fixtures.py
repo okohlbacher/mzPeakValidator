@@ -33,12 +33,30 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False):
     return pa.table({"spectrum": spectrum, "scan": scan}).replace_schema_metadata(
         {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()})
 
-def _data(sidx, mz, inten, inten_type=pa.float32()):
+def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64()):
     point = pa.StructArray.from_arrays(
-        [pa.array(sidx, pa.uint64()), pa.array(mz, pa.float64()), pa.array(inten, inten_type)],
+        [pa.array(sidx, pa.uint64()), pa.array(mz, mz_type), pa.array(inten, inten_type)],
         names=["spectrum_index", "mz", "intensity"])
     return pa.table({"point": point}).replace_schema_metadata(
         {b"spectrum_data_point_count": str(len(sidx)).encode()})
+
+def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
+    """Packed parallel-facet metadata: n real spectra + `pad` extra rows where spectrum/scan are
+    NULL (as a PASEF table padded by a longer precursor facet). footer spectrum_count = n."""
+    total_rows = n + pad
+    def pad_arr(vals, ty):                      # n real values then `pad` nulls
+        return pa.array(list(vals) + [None] * pad, ty)
+    spectrum = pa.StructArray.from_arrays(
+        [pad_arr(range(n), pa.uint64()), pad_arr([1] * n, pa.uint8()),
+         pad_arr(["MS:1000127"] * n, pa.large_string()), pad_arr(dp, pa.uint64())],
+        names=["index", "MS_1000511_ms_level", "MS_1000525_spectrum_representation",
+               "MS_1003060_number_of_data_points"],
+        mask=pa.array([False] * n + [True] * pad))     # struct-level null on the padded rows
+    scan = pa.StructArray.from_arrays([pad_arr(range(n), pa.uint64())], names=["source_index"],
+                                      mask=pa.array([False] * n + [True] * pad))
+    precursor = pa.StructArray.from_arrays([pa.array(range(total_rows), pa.uint64())], names=["source_index"])
+    return pa.table({"spectrum": spectrum, "scan": scan, "precursor": precursor}).replace_schema_metadata(
+        {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(sum(dp)).encode()})
 
 def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None):
     if os.path.isdir(d): shutil.rmtree(d)
@@ -90,6 +108,14 @@ def build_all(out_root):
     case("fail", "nan_mz", _meta(), _data(S, nan, IN), "FAIL", "mz_finite_data")                        # C2: NaN VALUE invalid (null is fine)
     blob = pa.table({"blob": pa.array([1, 2, 3], pa.int64())}).replace_schema_metadata({b"spectrum_data_point_count": b"3"})
     case("fail", "garbage_data_facet", _meta(), blob, "FAIL", "data_kind_has_facet")                    # M1: no point/chunk facet
+
+    # (A) packed parallel-facet layout: rows (7) > spectra (3); footer spectrum_count=3 must agree
+    # with non-null spectrum.index, not the row count. Regression for the PASEF/TIMS false positive.
+    case("pass", "packed_facets_multirow", _meta_packed(n=3, pad=4), _data(S, MZ, IN), "PASS")
+
+    # (B) L1-faithful float widths now accepted by the relaxed column schema
+    case("pass", "float32_mz", _meta(), _data(S, MZ, IN, mz_type=pa.float32()), "PASS")                 # 32-bit m/z (imzML)
+    case("pass", "float64_intensity", _meta(), _data(S, MZ, IN, inten_type=pa.float64()), "PASS")       # 64-bit intensity
 
     # imaging archive with an embedded optical TIFF — exercises the image-member primitives (warning-level)
     imeta, idata = _meta(coords=True), _data(S, MZ, IN)

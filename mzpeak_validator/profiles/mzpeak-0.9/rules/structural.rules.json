@@ -8,7 +8,7 @@
     "primitives": {
       "index_files_present": "no params. Walks mzpeak_index.json 'files[]'; errors if a listed file is missing or cannot be opened as Parquet.",
       "data_kind_facet": "params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.",
-      "columns_present": "params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema (type mismatch -> error, recovery rederive)."
+      "columns_present": "params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float']); type mismatch -> error, recovery rederive."
     }
   },
   "rules": [
@@ -25,7 +25,7 @@
      "params": {"file": "spectra_metadata"}},
 
     {"id": "columns_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none",
-     "doc": "spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. NOTE: that schema pins point.mz=double and point.intensity=float; an L1-faithful imzML conversion that preserves 32-bit m/z or 64-bit intensity will trip this (vs the permissive mz_dtype_data/intensity_dtype_data numeric rules). If 32-bit m/z is to be accepted, relax the type in spectra_data.columns.json. See HUPO-PSI #11 (binary array data types).",
+     "doc": "spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion keeps the source width, and both are valid pending HUPO-PSI #11 (binary array data types). To require a single width, narrow the type list in spectra_data.columns.json.",
      "params": {"file": "spectra_data"}},
 
     {"id": "columns_spectra_peaks", "primitive": "columns_present", "severity": "error", "recovery": "none",

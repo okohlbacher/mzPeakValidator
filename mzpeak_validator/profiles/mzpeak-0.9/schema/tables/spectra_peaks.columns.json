@@ -1,12 +1,13 @@
 {
   "file": "spectra_peaks",
+  "note": "centroided layout. mz/intensity accept both 32- and 64-bit floats (see spectra_data note; HUPO-PSI #11).",
   "facets": {
     "point": {
       "required": false,
       "columns": {
         "spectrum_index": {"type": "uint", "required": false},
-        "mz": {"type": "double", "required": false},
-        "intensity": {"type": "float", "required": false}
+        "mz": {"type": ["double", "float"], "required": false},
+        "intensity": {"type": ["float", "double"], "required": false}
       }
     }
   }

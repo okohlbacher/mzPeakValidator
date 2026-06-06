@@ -6,7 +6,7 @@
     "url": "https://github.com/HUPO-PSI/mzPeak",
     "note": "v0.9 = the d1aaaf84 base schema + the agreed imaging determinations (cv_list, scan_settings, pixel key). Pre-1.0: keyed to the spec commit."
   },
-  "rule_primitive_catalog": "1.1",
+  "rule_primitive_catalog": "1.2",
   "extends": null,
   "severity_model": "hard-errors-nondemotable",
   "conformance_axes": ["well-formed", "schema", "numeric", "index", "cv", "integrity", "imaging"],

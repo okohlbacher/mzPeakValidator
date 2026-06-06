@@ -28,7 +28,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow is required (pip install pyarrow):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.1"          # 1.1 adds the raw-member image primitives (member_exists/blob_hash/tiff_magic)
+CATALOG_VERSION = "1.2"          # 1.1: raw-member image primitives; 1.2: columns_present `type` may be a list; footer_count_equals_rows `count_column`
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -121,6 +121,11 @@ def arrow_logical(tystr):
 
 def type_ok(got, want):
     return want == got or (want == "integer" and got in ("int", "uint"))
+
+def type_matches(got, want):
+    """`want` is a single logical type or a list of accepted ones (e.g. ['double','float'])."""
+    wants = want if isinstance(want, list) else [want]
+    return any(type_ok(got, w) for w in wants)
 
 def has(ar, name, dotted):
     return ar.has_file(name) and dotted in ar.fields(name)
@@ -266,8 +271,9 @@ def p_columns_present(ar, rule, rep, params):
                     rep.add(rule, "error", f"{f}: required column '{path}' absent", {"file": f, "column": path})
                 continue
             want = cs.get("type")
-            if want and not type_ok(arrow_logical(got), want):
-                rep.add(rule, "error", f"{f}.{path}: type {arrow_logical(got)} != expected {want}",
+            if want and not type_matches(arrow_logical(got), want):
+                exp = " or ".join(want) if isinstance(want, list) else want
+                rep.add(rule, "error", f"{f}.{path}: type {arrow_logical(got)} != expected {exp}",
                         {"file": f, "column": path}, recovery="rederive")
 
 def p_footer_count_equals_rows(ar, rule, rep, params):
@@ -280,8 +286,17 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
         iv = int(v)
     except (TypeError, ValueError):
         rep.add(rule, "error", f"{f}: footer {key}={v!r} is not an integer", {"file": f}); return
-    if iv != ar.num_rows(f):
-        rep.add(rule, "error", f"{f}: footer {key}={iv} != parquet rows={ar.num_rows(f)}",
+    # In the packed parallel-facet layout, table rows == the LONGEST facet (e.g. one row per
+    # PASEF precursor), not the spectrum count. If count_column (a facet primary key) is given,
+    # count its non-null entries; the spectrum count is one per populated spectrum facet row.
+    col = params.get("count_column")
+    if col and has(ar, f, col):
+        c = ar.column(f, col)
+        actual, what = len(c) - c.null_count, f"non-null {col}"
+    else:
+        actual, what = ar.num_rows(f), "parquet rows"
+    if iv != actual:
+        rep.add(rule, "error", f"{f}: footer {key}={iv} != {what}={actual}",
                 {"file": f}, recovery="rederive")
 
 def p_column_predicate(ar, rule, rep, params):
@@ -340,22 +355,27 @@ def p_foreign_key(ar, rule, rep, params):
     parent = {x for x in ar.column(rf, rc).to_pylist() if x is not None}
     child = ar.column(f, col)
     missing = [x for x in pc.unique(child).to_pylist() if x is not None and x not in parent]
-    if missing or child.null_count:
+    # allow_null: in the packed parallel-facet layout a facet key is legitimately null on rows
+    # belonging to another facet (e.g. scan.source_index is null on precursor-only PASEF rows).
+    flag_null = child.null_count and not params.get("allow_null", False)
+    if missing or flag_null:
         parts = []
         if missing: parts.append(f"{len(missing)} value(s) with no {rf}.{rc} (e.g. {missing[:3]})")
-        if child.null_count: parts.append(f"{child.null_count} null")
+        if flag_null: parts.append(f"{child.null_count} null")
         rep.add(rule, "error", f"{f}.{col}: " + "; ".join(parts), {"file": f, "column": col})
 
 def p_index_contiguous(ar, rule, rep, params):
     f, col = params["file"], params["column"]
     if not has(ar, f, col): return
     import numpy as np
-    v = ar.column(f, col).to_numpy(zero_copy_only=False)
+    # ignore nulls: in the packed parallel-facet layout the spectrum facet only populates a subset
+    # of rows; its index over those non-null rows must still be 0-based contiguous.
+    v = pc.drop_null(ar.column(f, col)).to_numpy(zero_copy_only=False)
     expect = np.arange(len(v), dtype=np.int64)
     if len(v) and not np.array_equal(v.astype(np.int64), expect):
         i = int(np.argmax(v.astype(np.int64) != expect))
         rep.add(rule, rule.get("severity", "warning"),
-                f"{f}.{col} not 0-based contiguous (len {len(v)}): row {i} is {v[i]}, expected {i}",
+                f"{f}.{col} not 0-based contiguous (len {len(v)} non-null): position {i} is {v[i]}, expected {i}",
                 {"file": f, "column": col, "row": i})
 
 def p_cv_inflection(ar, rule, rep, params):

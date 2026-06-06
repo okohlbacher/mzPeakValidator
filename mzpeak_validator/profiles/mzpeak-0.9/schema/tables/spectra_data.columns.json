@@ -1,13 +1,13 @@
 {
   "file": "spectra_data",
-  "note": "point layout. chunk/numpress layouts carry a `chunk` facet instead; point columns are optional so those layouts are not false-failed (their decoding is a v1 TODO).",
+  "note": "point layout. chunk/numpress layouts carry a `chunk` facet instead; point columns are optional so those layouts are not false-failed (their decoding is a v1 TODO). mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion preserves the source width (32-bit m/z, 64-bit intensity) -- both are valid pending HUPO-PSI #11.",
   "facets": {
     "point": {
       "required": false,
       "columns": {
         "spectrum_index": {"type": "uint", "required": false},
-        "mz": {"type": "double", "required": false},
-        "intensity": {"type": "float", "required": false}
+        "mz": {"type": ["double", "float"], "required": false},
+        "intensity": {"type": ["float", "double"], "required": false}
       }
     }
   }
