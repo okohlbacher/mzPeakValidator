@@ -1,22 +1,72 @@
 {
+  "about": {
+    "file": "numeric.rules.json",
+    "axis": "numeric + integrity + index",
+    "purpose": "Value-level integrity of the signal arrays and the keys that tie tables together: counts agree, m/z is sorted and finite, intensity is non-negative, dtypes fit their role, foreign keys resolve, and the spectrum index is well-formed.",
+    "applies_to": "point-layout archives. Rules that read point.* no-op on chunk/numpress layouts (the column is absent), so those layouts pass the layout-independent checks and skip the rest. Most rules here are DATA_SCAN rules, skipped under --quick (footer_count_equals_rows is cheap and still runs).",
+    "null_semantics": "Arrow nulls are LEGITIMATE (sparse/null-marking): m/z and number_of_data_points may be null. Rules treat nulls as OK (counts as 0; skipped in monotonic/finite). Only genuine NaN/inf VALUES are flagged (see mz_finite_data). Do not 'fix' a rule to reject nulls.",
+    "how_to_amend": "Each rule instantiates a primitive in mzpeak_validator.py. Copy a rule and edit params to retarget a column/table; the engine reads only id/primitive/severity/recovery/params. 'about'/'doc' are ignored.",
+    "primitives": {
+      "footer_count_equals_rows": "params: file, footer_key. Compares the Parquet key-value-metadata footer int to actual row count. Absent footer -> warning; non-int -> error; mismatch -> error.",
+      "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
+      "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
+      "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
+      "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
+      "foreign_key": "params: file, column, ref_file, ref_column. Every non-null child value must exist in the parent column; nulls in the child are also flagged.",
+      "index_contiguous": "params: file, column, [severity]. The column must equal 0,1,2,...,n-1."
+    }
+  },
   "rules": [
-    {"id": "spectrum_count_agreement", "primitive": "footer_count_equals_rows", "severity": "error", "recovery": "rederive", "params": {"file": "spectra_metadata", "footer_key": "spectrum_count"}},
-    {"id": "data_points_sum", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive", "params": {"file": "spectra_data", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003060_number_of_data_points", "guard": "point.intensity"}},
+    {"id": "spectrum_count_agreement", "primitive": "footer_count_equals_rows", "severity": "error", "recovery": "rederive",
+     "doc": "spectra_metadata footer 'spectrum_count' equals its row count. This is the ONE footer count the reference writer fills reliably for plain LC-MS; ion-mobility (TIMS) writers can disagree (frames vs expanded scans) -- a real upstream finding, not a validator bug. recovery=rederive: the true count is the row count. Only this footer is trusted; per-data-point totals are checked by data_points_sum instead.",
+     "params": {"file": "spectra_metadata", "footer_key": "spectrum_count"}},
 
-    {"id": "mz_finite_data", "primitive": "column_predicate", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.mz", "op": "finite"}},
-    {"id": "intensity_nonneg_data", "primitive": "column_predicate", "severity": "error", "recovery": "normalize", "params": {"file": "spectra_data", "column": "point.intensity", "op": "ge", "value": 0}},
-    {"id": "intensity_nonneg_peaks", "primitive": "column_predicate", "severity": "error", "recovery": "normalize", "params": {"file": "spectra_peaks", "column": "point.intensity", "op": "ge", "value": 0}},
+    {"id": "data_points_sum", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive",
+     "doc": "Point-layout integrity: sum of per-spectrum number_of_data_points equals the spectra_data row count. 'guard' point.intensity gates this to the point layout (skips chunk/numpress). Null counts (centroid spectra) count as 0. Preferred over a footer check because the writer's spectra_data footer is unreliable.",
+     "params": {"file": "spectra_data", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003060_number_of_data_points", "guard": "point.intensity"}},
 
-    {"id": "mz_monotonic_data", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair", "params": {"file": "spectra_data", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
-    {"id": "mz_monotonic_peaks", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair", "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
+    {"id": "mz_finite_data", "primitive": "column_predicate", "severity": "error", "recovery": "none",
+     "doc": "spectra_data point.mz has no NaN/inf VALUES (Arrow nulls are allowed -- see null_semantics). Distinct from monotonicity; a NaN both breaks sorting and is meaningless as a mass.",
+     "params": {"file": "spectra_data", "column": "point.mz", "op": "finite"}},
 
-    {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double"]}},
-    {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.mz", "role": "m/z", "allowed": ["double", "float"]}},
+    {"id": "intensity_nonneg_data", "primitive": "column_predicate", "severity": "error", "recovery": "normalize",
+     "doc": "spectra_data point.intensity >= 0. recovery=normalize (clamp to 0) is LOSSY, so it is opt-in only (repair --aggressive); validation just reports. To forbid the clamp entirely, set recovery to 'none'.",
+     "params": {"file": "spectra_data", "column": "point.intensity", "op": "ge", "value": 0}},
 
-    {"id": "point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none", "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
-    {"id": "point_fk_peaks", "primitive": "foreign_key", "severity": "error", "recovery": "none", "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
-    {"id": "scan_source_index_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild", "params": {"file": "spectra_metadata", "column": "scan.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+    {"id": "intensity_nonneg_peaks", "primitive": "column_predicate", "severity": "error", "recovery": "normalize",
+     "doc": "Same non-negativity check on the centroided spectra_peaks table.",
+     "params": {"file": "spectra_peaks", "column": "point.intensity", "op": "ge", "value": 0}},
 
-    {"id": "spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none", "params": {"file": "spectra_metadata", "column": "spectrum.index"}}
+    {"id": "mz_monotonic_data", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair",
+     "doc": "Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing. Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless).",
+     "params": {"file": "spectra_data", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
+
+    {"id": "mz_monotonic_peaks", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair",
+     "doc": "Same per-spectrum m/z ordering check on spectra_peaks.",
+     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
+
+    {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
+     "doc": "spectra_data point.intensity is a floating type (float or double), never integer. PERMISSIVE on width (both allowed); the STRICT per-schema expectation lives in spectra_data.columns.json / columns_spectra_data. Edit allowed[] to broaden/narrow accepted types.",
+     "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double"]}},
+
+    {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
+     "doc": "spectra_data point.mz is a floating type. Also permissive on width (double or float); the column schema pins double, so 32-bit m/z fails there (columns_spectra_data), not here. This split lets you keep the hard 'must be float-not-int' check while debating width separately (HUPO-PSI #11).",
+     "params": {"file": "spectra_data", "column": "point.mz", "role": "m/z", "allowed": ["double", "float"]}},
+
+    {"id": "point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable.",
+     "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+
+    {"id": "point_fk_peaks", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "Same FK integrity from spectra_peaks back to spectrum.index.",
+     "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+
+    {"id": "scan_source_index_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "scan.source_index resolves to a spectrum.index (both columns live in spectra_metadata). recovery=rebuild: the scan<->spectrum map is derivable.",
+     "params": {"file": "spectra_metadata", "column": "scan.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
+
+    {"id": "spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
+     "doc": "spectrum.index is 0-based contiguous (0..n-1). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
+     "params": {"file": "spectra_metadata", "column": "spectrum.index"}}
   ]
 }

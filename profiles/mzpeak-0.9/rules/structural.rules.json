@@ -1,9 +1,35 @@
 {
+  "about": {
+    "file": "structural.rules.json",
+    "axis": "well-formed + schema + index",
+    "purpose": "The archive opens, every file the index lists is present and readable, a file that claims to hold signal actually carries a signal facet, and each table's columns/types match the pinned column schema.",
+    "applies_to": "every mzPeak archive (no layout/imaging gating).",
+    "how_to_amend": "Each entry is an instance of a primitive implemented in mzpeak_validator.py (the PRIMITIVES dict). To add or change a check, copy a rule and edit its params. The engine reads only: id, primitive, severity (error|warning), recovery (a class from profile.json / design doc s4: rebuild|recompute|rederive|reorder_pair|normalize|drop|none), params. The 'about' and 'doc' fields are documentation only and are ignored by the engine.",
+    "primitives": {
+      "index_files_present": "no params. Walks mzpeak_index.json 'files[]'; errors if a listed file is missing or cannot be opened as Parquet.",
+      "data_kind_facet": "params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.",
+      "columns_present": "params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema (type mismatch -> error, recovery rederive)."
+    }
+  },
   "rules": [
-    {"id": "index_files_present", "primitive": "index_files_present", "severity": "error", "recovery": "rebuild"},
-    {"id": "data_kind_has_facet", "primitive": "data_kind_facet", "severity": "error", "recovery": "none", "params": {"data_kinds": ["data arrays", "peaks"], "facets": ["point", "chunk"], "entity_types": ["spectrum", "mass spectrum"]}},
-    {"id": "columns_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none", "params": {"file": "spectra_metadata"}},
-    {"id": "columns_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none", "params": {"file": "spectra_data"}},
-    {"id": "columns_spectra_peaks", "primitive": "columns_present", "severity": "error", "recovery": "none", "params": {"file": "spectra_peaks"}}
+    {"id": "index_files_present", "primitive": "index_files_present", "severity": "error", "recovery": "rebuild",
+     "doc": "Every file named in mzpeak_index.json 'files[]' exists in the archive and opens as Parquet. recovery=rebuild: a lost/garbled index can be reconstructed from the present files. No params to tune.",
+     "params": {}},
+
+    {"id": "data_kind_has_facet", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",
+     "doc": "A file the index advertises as signal (data_kind 'data arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Catches an index that promises signal over a file holding something else. Amend: widen data_kinds/entity_types to gate more files, or add a facet name (e.g. a future layout) to facets[].",
+     "params": {"data_kinds": ["data arrays", "peaks"], "facets": ["point", "chunk"], "entity_types": ["spectrum", "mass spectrum"]}},
+
+    {"id": "columns_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata has the required facets/columns and correct types per schema/tables/spectra_metadata.columns.json. To change WHICH columns are required or their expected type, edit that .columns.json file, not this rule.",
+     "params": {"file": "spectra_metadata"}},
+
+    {"id": "columns_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. NOTE: that schema pins point.mz=double and point.intensity=float; an L1-faithful imzML conversion that preserves 32-bit m/z or 64-bit intensity will trip this (vs the permissive mz_dtype_data/intensity_dtype_data numeric rules). If 32-bit m/z is to be accepted, relax the type in spectra_data.columns.json. See HUPO-PSI #11 (binary array data types).",
+     "params": {"file": "spectra_data"}},
+
+    {"id": "columns_spectra_peaks", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types.",
+     "params": {"file": "spectra_peaks"}}
   ]
 }

@@ -1,11 +1,33 @@
 {
+  "about": {
+    "file": "imaging.rules.json",
+    "axis": "imaging",
+    "purpose": "Checks that apply only to MS-imaging archives: 1-based pixel coordinates, and integrity of any embedded optical images (TIFFs stored as ZIP members and described in metadata.imaging.images[]).",
+    "applies_to": "imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata column matches IMS_1000050 (position x). The coordinate rule self-gates on that; the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).",
+    "spec_basis": "imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8: 1-based coordinates preserved from imzML; optical images embedded verbatim as images/image_NNNN.tiff and registered in metadata.imaging.images[]. Per that spec, a missing/mismatched optical image is a WARNING (auxiliary; outside the spectral L1 contract).",
+    "how_to_amend": "The image rules are data-driven via params: change 'list' to point at a different array in the index, or the field names (member/hash_field/size_field/media_type_field) to match a different metadata shape. To make image problems hard errors, change severity to 'error'. 'about'/'doc' are ignored by the engine.",
+    "primitives": {
+      "imaging_coordinates": "no params. If imaging, requires IMS_1000050_position_x AND IMS_1000051_position_y columns (checked independently) and that their minimum value is >= 1 (1-based).",
+      "member_exists": "params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.",
+      "blob_hash": "params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.",
+      "tiff_magic": "params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\\0 little-endian or MM\\0* big-endian)."
+    }
+  },
   "rules": [
-    {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none", "params": {}},
+    {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none",
+     "doc": "Imaging archives carry both position_x and position_y, 1-based (min coordinate >= 1). The deliberate offset from the 0-based spectrum.index is intentional (coordinates are preserved verbatim from imzML). No params.",
+     "params": {}},
+
     {"id": "image_member_present", "primitive": "member_exists", "severity": "warning", "recovery": "none",
+     "doc": "Every optical image declared in metadata.imaging.images[].archive_path is actually present in the archive. WARNING, not error: optical images are auxiliary. Amend 'list'/'member' if image bookkeeping moves elsewhere in the index.",
      "params": {"list": "metadata.imaging.images", "member": "archive_path"}},
+
     {"id": "image_blob_hash", "primitive": "blob_hash", "severity": "warning", "recovery": "recompute",
+     "doc": "A present image member's bytes match its declared sha256 and size_bytes. recovery=recompute: a stale digest is fixable without touching the image. Change 'algo' if a different hash is recorded; null/absent hash fields are skipped per entry.",
      "params": {"list": "metadata.imaging.images", "member": "archive_path", "algo": "sha256", "hash_field": "sha256", "size_field": "size_bytes"}},
+
     {"id": "image_tiff_magic", "primitive": "tiff_magic", "severity": "warning", "recovery": "none",
+     "doc": "An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type.",
      "params": {"list": "metadata.imaging.images", "member": "archive_path", "media_type_field": "media_type", "media_type": "image/tiff"}}
   ]
 }

@@ -1,6 +1,21 @@
 {
+  "about": {
+    "file": "cv.rules.json",
+    "axis": "cv",
+    "purpose": "Controlled-vocabulary discipline on inflected column names of the form ${CV}_${ACCESSION}_${name} (e.g. MS_1000511_ms_level): the CV code must be one the profile pins, and the accession should resolve inside that pinned OBO snapshot.",
+    "applies_to": "any table with inflected columns; rules below target the two metadata tables.",
+    "how_to_amend": "WHICH CVs exist and which accessions are valid is fixed by the pinned OBO snapshots under cv/ (declared in profile.json 'artifacts'), NOT by these rules. To accept a new CV code, add its OBO as a cv artifact in profile.json. To check inflection on another table, copy a rule and change params.file. 'about'/'doc' are ignored by the engine.",
+    "primitives": {
+      "cv_inflection": "params: file (logical table name). The engine injects the set of pinned CV accessions. For each column whose leaf name matches ${CV}_${digits}_...: unknown CV code -> error; known code but accession absent from the pinned OBO -> warning. The literal prefix 'ARROW_' is skipped (it is not a CV)."
+    }
+  },
   "rules": [
-    {"id": "cv_inflection_spectra_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none", "params": {"file": "spectra_metadata"}},
-    {"id": "cv_inflection_chromatograms_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none", "params": {"file": "chromatograms_metadata"}}
+    {"id": "cv_inflection_spectra_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none",
+     "doc": "Inflected columns in spectra_metadata (spectrum/scan/precursor/selected_ion facets) use a pinned CV code and a resolvable accession. severity=error is the code-unknown case; an unresolved accession is downgraded to warning inside the primitive.",
+     "params": {"file": "spectra_metadata"}},
+
+    {"id": "cv_inflection_chromatograms_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none",
+     "doc": "Same check for chromatograms_metadata when present (the primitive no-ops if the file is absent, so this is harmless on archives without chromatograms).",
+     "params": {"file": "chromatograms_metadata"}}
   ]
 }
