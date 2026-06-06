@@ -11,9 +11,9 @@ Profile selection: --profile wins; else the archive's
 `mzpeak_index.json.metadata.format.version` selects `profiles/mzpeak-<version>`;
 else (no/unknown version) the latest known profile is used (with a warning).
 
-Usage:
-    python mzpeak_validator.py <archive> [--profile DIR] [--profiles-dir DIR]
-                               [--json report.json] [--log findings.log] [--quick]
+Usage (installed console script, or `python -m mzpeak_validator`):
+    mzpeak-validate <archive> [--profile DIR] [--profiles-dir DIR]
+                    [--json report.json] [--log findings.log] [--quick]
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """

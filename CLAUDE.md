@@ -13,8 +13,9 @@ reproduce identical verdicts.
 ## Commands
 
 ```bash
-pip install -r requirements.txt                                   # pyarrow, numpy
-python mzpeak_validator.py <archive.mzpeak|dir/> [--json out.json] [--log findings.log] [--quick] [--profile DIR]
+pip install -e .                                                  # editable dev install (pulls pyarrow, numpy); gives the `mzpeak-validate` script
+mzpeak-validate <archive.mzpeak|dir/> [--json out.json] [--log findings.log] [--quick] [--profile DIR]
+python -m mzpeak_validator <archive.mzpeak|dir/> ...              # equivalent, no console script needed
 python smoke_test.py                                              # MUST stay green before any commit
 MZPEAK_CORPUS=/dir/of/mzpeak python smoke_test.py                 # point the real-file corpus elsewhere
 python make_fixtures.py [out_dir]                                 # materialise fixtures to inspect them
@@ -27,8 +28,10 @@ python make_fixtures.py [out_dir]                                 # materialise 
 
 ## Architecture
 
-- **`mzpeak_validator.py`** (~560 lines) — the engine: `Archive` (opens a `.mzpeak` ZIP or unpacked dir; exposes Parquet schemas/columns *and* raw ZIP members), `Profile` (loads manifest + rules + column schemas + CV snapshots), `Report` (collates findings), the `PRIMITIVES` dict (15 primitives), and `run()`/`main()`.
-- **`profiles/mzpeak-0.9/`** — the profile bundle:
+- **`mzpeak_validator/`** — the installable package (packaging in `pyproject.toml`; `pip install .` ships the profiles as package data; console script `mzpeak-validate = mzpeak_validator.core:main`).
+  - **`core.py`** (~560 lines) — the engine: `Archive` (opens a `.mzpeak` ZIP or unpacked dir; exposes Parquet schemas/columns *and* raw ZIP members), `Profile` (loads manifest + rules + column schemas + CV snapshots), `Report` (collates findings), the `PRIMITIVES` dict (15 primitives), and `run()`/`main()`. `PROFILES_ROOT = Path(__file__).parent / "profiles"` resolves the bundled profiles whether running from source or installed.
+  - **`__init__.py`** re-exports the public API (`run`, `main`, …); **`__main__.py`** enables `python -m mzpeak_validator`.
+- **`mzpeak_validator/profiles/mzpeak-0.9/`** — the profile bundle (shipped inside the package):
   - `profile.json` — manifest: spec/commit, `rule_primitive_catalog` version, and `artifacts[]` (CVs, schemas, rule files). `sha256` fields are `null` until a future `--seal` step fills them.
   - `cv/` — pinned OBO snapshots: `psi-ms.obo.gz`, `imagingMS.obo`, `uo.obo`.
   - `schema/` — `mzpeak_index.schema.json` + `tables/*.columns.json` (per-table column specs: which facets/columns are required and their expected logical types).
@@ -48,11 +51,13 @@ Each `rules/*.rules.json` opens with an `about` block (purpose, what gates it, a
 
 To add/adjust a check: copy a rule and edit its `params`. To change *which columns/types* are required, edit the relevant `schema/tables/*.columns.json` — **not** the rule. To accept a new CV code, add its OBO as a `cv` artifact in `profile.json`.
 
+**After changing a profile, regenerate its reference page** (it is derived from the bundle, so it can't drift): `python docs/gen_profile_page.py mzpeak_validator/profiles/<id> > docs/profiles/<id>.md`. The page (`docs/profiles/<id>.md`) tabulates every rule, the primitive param contracts, and the column schemas — a good first thing to read when learning the rule set.
+
 **Recovery classes** (each rule declares one; see design doc §4): lossless & auto — `rebuild`, `recompute`, `rederive`, `reorder_pair`; lossy & opt-in — `normalize`, `drop`; or `none`.
 
 ## Adding a primitive (catalog change)
 
-1. Write `p_<name>(ar, rule, rep, params)` in `mzpeak_validator.py` and register it in `PRIMITIVES`.
+1. Write `p_<name>(ar, rule, rep, params)` in `mzpeak_validator/core.py` and register it in `PRIMITIVES`.
 2. If it does heavy full-column / full-member I/O, add its name to `DATA_SCAN` so `--quick` skips it.
 3. Bump `CATALOG_VERSION` **and** the profile's `rule_primitive_catalog` together (engine warns on mismatch). Currently both are **`1.1`**.
 4. Add a fixture in `make_fixtures.py` and keep `smoke_test.py` green. For warning-level rules, set `expected.json`'s `warn_rule` (the harness asserts warnings separately from the FAIL-verdict error rules).

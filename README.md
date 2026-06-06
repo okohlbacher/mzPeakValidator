@@ -7,13 +7,23 @@ Validation is driven by a **versioned profile** (JSON Schemas + pinned controlle
 ## Install
 
 ```bash
-pip install -r requirements.txt        # pyarrow, numpy
+pip install git+https://github.com/okohlbacher/mzPeakValidator.git   # from GitHub
+# or, from a clone:
+pip install .            # regular install
+pip install -e .         # editable (development)
 ```
+
+Dependencies (`pyarrow>=12`, `numpy`) are pulled in automatically. The versioned
+profile bundle (CV snapshots + schemas + rules) ships **inside** the package, so a
+plain `pip install` is fully self-contained — no separate data download. Installing
+provides the `mzpeak-validate` console command.
 
 ## Use
 
 ```bash
-python mzpeak_validator.py <archive.mzpeak | unpacked_dir/> [--json report.json] [--log findings.log] [--quick]
+mzpeak-validate <archive.mzpeak | unpacked_dir/> [--json report.json] [--log findings.log] [--quick]
+# equivalently, without activating a script entry point:
+python -m mzpeak_validator <archive.mzpeak | unpacked_dir/> ...
 ```
 
 - Exit code `0` = no errors, `1` = at least one error-level finding, `2` = engine failure.
@@ -22,26 +32,43 @@ python mzpeak_validator.py <archive.mzpeak | unpacked_dir/> [--json report.json]
 - `--json FILE` writes the full machine-readable JSON report; `--log FILE` writes the
   human-readable findings (the same errors/warnings/info lines printed to the console).
 
+Programmatic use:
+
+```python
+from mzpeak_validator import run
+report = run("archive.mzpeak")        # -> dict (verdict, summary, findings, ...)
+```
+
 **Profile selection.** `--profile` wins; else the archive's `mzpeak_index.json` →
-`metadata.format.version` selects `profiles/mzpeak-<version>/`; else the **latest
-known profile** is used and a warning is emitted.
+`metadata.format.version` selects the bundled `mzpeak-<version>` profile; else the
+**latest known profile** is used and a warning is emitted.
 
 ## Layout
 
 ```
-mzpeak_validator.py          # the engine (rule-primitive catalog)
-make_fixtures.py             # generate tiny pass/fail conformance fixtures
-smoke_test.py                # fixtures + a real-.mzpeak corpus (env MZPEAK_CORPUS)
-profiles/
-  mzpeak-0.9/
-    profile.json             # manifest: versions + artifacts + catalog version
-    cv/                      # pinned OBO snapshots (psi-ms, imagingMS, uo)
-    schema/                  # JSON Schema (index) + JSON column schemas (Parquet facets)
-    rules/                   # declarative rules: structural / cv / numeric / imaging
+mzpeak_validator/            # the installable package
+  __init__.py                # public API (run, main, ...) + console entry point
+  __main__.py                # `python -m mzpeak_validator`
+  core.py                    # the engine (rule-primitive catalog)
+  profiles/
+    mzpeak-0.9/
+      profile.json           # manifest: versions + artifacts + catalog version
+      cv/                    # pinned OBO snapshots (psi-ms, imagingMS, uo)
+      schema/                # JSON Schema (index) + JSON column schemas (Parquet facets)
+      rules/                 # declarative rules: structural / cv / numeric / imaging
+pyproject.toml               # packaging metadata + console script
+make_fixtures.py             # (dev) generate tiny pass/fail conformance fixtures
+smoke_test.py                # (dev) fixtures + a real-.mzpeak corpus (env MZPEAK_CORPUS)
 docs/validation-design.md    # the design (profiles, primitive catalog, auto-repair, formats)
+docs/profiles/               # generated per-profile reference pages (checks + rule structure)
+docs/gen_profile_page.py     # regenerates a profile reference page from its bundle
 ```
 
 ## What it checks (mzpeak-0.9)
+
+> **Full per-profile reference:** [`docs/profiles/mzpeak-0.9.md`](docs/profiles/mzpeak-0.9.md) —
+> every rule (id / primitive / severity / recovery / what it checks), the primitive param
+> contracts, and the column schemas. Index of all profiles: [`docs/profiles/`](docs/profiles/README.md).
 
 Structural (archive + index ↔ files, `data_kind` ⇒ signal facet, column types), CV
 (codes declared & resolvable in the pinned OBOs, inflection well-formed), numeric

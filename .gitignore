@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
-profiles/*/fixtures/
+mzpeak_validator/profiles/*/fixtures/
 fixtures-preview/
 *.mzpeak
+build/
+dist/
+*.egg-info/
