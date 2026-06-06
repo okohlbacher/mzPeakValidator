@@ -13,12 +13,14 @@ pip install -r requirements.txt        # pyarrow, numpy
 ## Use
 
 ```bash
-python mzpeak_validator.py <archive.mzpeak | unpacked_dir/> [--json report.json] [--quick]
+python mzpeak_validator.py <archive.mzpeak | unpacked_dir/> [--json report.json] [--log findings.log] [--quick]
 ```
 
 - Exit code `0` = no errors, `1` = at least one error-level finding, `2` = engine failure.
 - `--quick` skips full-column data scans (metadata-only mode).
 - `--profile DIR` forces a profile; otherwise it is resolved automatically (below).
+- `--json FILE` writes the full machine-readable JSON report; `--log FILE` writes the
+  human-readable findings (the same errors/warnings/info lines printed to the console).
 
 **Profile selection.** `--profile` wins; else the archive's `mzpeak_index.json` →
 `metadata.format.version` selects `profiles/mzpeak-<version>/`; else the **latest

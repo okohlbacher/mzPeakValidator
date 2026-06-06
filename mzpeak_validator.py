@@ -13,7 +13,7 @@ else (no/unknown version) the latest known profile is used (with a warning).
 
 Usage:
     python mzpeak_validator.py <archive> [--profile DIR] [--profiles-dir DIR]
-                               [--json report.json] [--quick]
+                               [--json report.json] [--log findings.log] [--quick]
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """
@@ -537,6 +537,7 @@ def main():
     ap.add_argument("--profile", help="explicit profile directory (overrides version resolution)")
     ap.add_argument("--profiles-dir", default=str(PROFILES_ROOT), help="root holding mzpeak-<version> profiles")
     ap.add_argument("--json", help="write the full JSON report to this path")
+    ap.add_argument("--log", help="write the human-readable findings (errors/warnings/info) to this file")
     ap.add_argument("--quick", action="store_true", help="skip full-column data scans (metadata mode)")
     a = ap.parse_args()
     try:
@@ -546,16 +547,19 @@ def main():
     if a.json:
         Path(a.json).write_text(json.dumps(report, indent=2))
     s = report["summary"]
-    print(f"mzPeak validation: {report['verdict']}  ({s['errors']} errors, {s['warnings']} warnings)")
-    print(f"  archive: {report['archive']}")
-    print(f"  profile: {report['profile']}  catalog {report['rule_primitive_catalog']}  CV {report['cv']}")
+    lines = [f"mzPeak validation: {report['verdict']}  ({s['errors']} errors, {s['warnings']} warnings)",
+             f"  archive: {report['archive']}",
+             f"  profile: {report['profile']}  catalog {report['rule_primitive_catalog']}  CV {report['cv']}"]
     for f in report["findings"]:
         loc = f["location"]
         where = loc.get("file", "") + (f":{loc['column']}" if loc.get("column") else "")
         if loc.get("row") is not None: where += f"#row{loc['row']}"
         rec = f" [recover:{f['recovery']}]" if f.get("recovery") not in (None, "none") else ""
         cnt = f" (x{f['count']})" if f.get("count", 1) > 1 else ""
-        print(f"  {f['level'].upper():7} {f['ruleId'] or '-':28} {where}{rec}{cnt}\n           {f['message']}")
+        lines.append(f"  {f['level'].upper():7} {f['ruleId'] or '-':28} {where}{rec}{cnt}\n           {f['message']}")
+    print("\n".join(lines))
+    if a.log:
+        Path(a.log).write_text("\n".join(lines) + "\n")
     sys.exit(1 if s["errors"] else 0)
 
 if __name__ == "__main__":

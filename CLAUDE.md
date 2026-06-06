@@ -14,7 +14,7 @@ reproduce identical verdicts.
 
 ```bash
 pip install -r requirements.txt                                   # pyarrow, numpy
-python mzpeak_validator.py <archive.mzpeak|dir/> [--json out.json] [--quick] [--profile DIR]
+python mzpeak_validator.py <archive.mzpeak|dir/> [--json out.json] [--log findings.log] [--quick] [--profile DIR]
 python smoke_test.py                                              # MUST stay green before any commit
 MZPEAK_CORPUS=/dir/of/mzpeak python smoke_test.py                 # point the real-file corpus elsewhere
 python make_fixtures.py [out_dir]                                 # materialise fixtures to inspect them
@@ -22,6 +22,7 @@ python make_fixtures.py [out_dir]                                 # materialise 
 
 - Exit codes: `0` no errors, `1` ≥1 error-level finding, `2` engine failure.
 - `--quick` skips full-column data scans (the `DATA_SCAN` primitives); cheap footer/metadata checks still run. The smoke test auto-uses `--quick` for corpus files >50 MB.
+- `--json FILE` writes the full JSON report; `--log FILE` writes the human-readable findings (errors/warnings/info), byte-identical to console output.
 - `smoke_test.py` is the regression gate: 15 fixtures (10 fail + 5 pass, incl. 4 imaging) each must reach their expected verdict and trip the named rule, plus it validates whatever real `.mzpeak` corpus it finds.
 
 ## Architecture
