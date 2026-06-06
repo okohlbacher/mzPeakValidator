@@ -10,7 +10,7 @@
       "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.",
       "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
       "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
-      "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
+      "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
       "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
       "foreign_key": "params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).",
       "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored)."
@@ -38,11 +38,11 @@
      "params": {"file": "spectra_peaks", "column": "point.intensity", "op": "ge", "value": 0}},
 
     {"id": "mz_monotonic_data", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair",
-     "doc": "Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing. Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless).",
+     "doc": "Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing -- but only when the array index declares point.mz sorted (non-null sorting_rank). A file that declares m/z unsorted is conformant as-is and is skipped (info). Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless).",
      "params": {"file": "spectra_data", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
 
     {"id": "mz_monotonic_peaks", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair",
-     "doc": "Same per-spectrum m/z ordering check on spectra_peaks.",
+     "doc": "Same per-spectrum m/z ordering check on spectra_peaks, likewise gated on the declared sorting_rank of point.mz.",
      "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
 
     {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",

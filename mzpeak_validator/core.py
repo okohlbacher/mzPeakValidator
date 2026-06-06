@@ -17,18 +17,19 @@ Usage (installed console script, or `python -m mzpeak_validator`):
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """
-import argparse, gzip, hashlib, json, os, re, sys, tempfile, zipfile
+import argparse, gzip, hashlib, json, re, sys, tempfile, zipfile
 from pathlib import Path
 
 try:
+    import numpy as np
     import pyarrow as pa
     import pyarrow.parquet as pq
     import pyarrow.compute as pc
 except Exception as e:                                          # pragma: no cover
-    print("ERROR: pyarrow is required (pip install pyarrow):", e, file=sys.stderr)
+    print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.2"          # 1.1: raw-member image primitives; 1.2: columns_present `type` may be a list; footer_count_equals_rows `count_column`
+CATALOG_VERSION = "1.3"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -43,6 +44,13 @@ class Archive:
         else:
             self._tmp = tempfile.mkdtemp(prefix="mzpeak_val_")
             with zipfile.ZipFile(self.path) as z:
+                comp = sum(i.compress_size for i in z.infolist())
+                uncomp = sum(i.file_size for i in z.infolist())
+                # mzPeak MUST store members uncompressed (ratio ~1); a large, highly-inflating
+                # archive is a zip bomb, not a conformant file — refuse before extracting.
+                if uncomp > 100_000_000 and comp and uncomp / comp > 50:
+                    raise ValueError(f"refusing to extract: {uncomp} bytes uncompressed vs {comp} "
+                                     f"compressed ({uncomp / comp:.0f}x) — mzPeak members must be stored uncompressed")
                 z.extractall(self._tmp)
             self.root = Path(self._tmp)
         idx = self.root / "mzpeak_index.json"
@@ -53,24 +61,44 @@ class Archive:
         if self._tmp:
             import shutil; shutil.rmtree(self._tmp, ignore_errors=True)
 
+    def _contained(self, rel):
+        """Resolve an archive-relative path, refusing escapes (absolute, '..', symlink) — names come
+        from the untrusted index, so a member must not be able to address files outside the archive."""
+        if not rel:
+            return None
+        root = self.root.resolve()
+        full = (self.root / rel).resolve()
+        try:
+            full.relative_to(root)
+        except ValueError:
+            return None
+        return full
+
+    def _is_file(self, rel):
+        full = self._contained(rel)
+        return full is not None and full.is_file()
+
     def _fname(self, name):
-        """Resolve a logical table name to a file ('spectra_data' -> 'spectra_data.parquet'); prefer the .parquet form."""
-        if name.endswith(".parquet") and (self.root / name).is_file():
+        """Resolve a logical table name to a contained file ('spectra_data' -> 'spectra_data.parquet')."""
+        if name.endswith(".parquet") and self._is_file(name):
             return name
-        if (self.root / (name + ".parquet")).is_file():
+        if self._is_file(name + ".parquet"):
             return name + ".parquet"
         return name
 
     def has_file(self, name):
-        return (self.root / self._fname(name)).is_file()
+        return self._is_file(self._fname(name))
 
     def has_member(self, name):
-        """Is `name` present as a raw archive member (verbatim path, not parquet-resolved)?"""
-        return bool(name) and (self.root / name).is_file()
+        """Is `name` a present, archive-contained raw member (not parquet-resolved)?"""
+        return self._is_file(name)
 
     def read_member(self, name, n=None):
-        """Raw bytes of an archive member (first `n` bytes if given)."""
-        with open(self.root / name, "rb") as fh:
+        """Raw bytes of an archive-contained member (first `n` bytes if given)."""
+        full = self._contained(name)
+        if full is None:
+            raise ValueError(f"refusing to read member outside the archive: {name!r}")
+        with open(full, "rb") as fh:
             return fh.read() if n is None else fh.read(n)
 
     def pf(self, name):
@@ -84,7 +112,7 @@ class Archive:
 
     def footer(self, name, key):
         v = (self.pf(name).metadata.metadata or {}).get(key.encode())
-        return v.decode() if v is not None else None
+        return v.decode(errors="replace") if v is not None else None
 
     def fields(self, name):
         """Flat name -> arrow type string, walking two levels of struct."""
@@ -109,14 +137,14 @@ class Archive:
 
 def arrow_logical(tystr):
     s = tystr.lower()
+    if "list" in s: return "list"          # containers first: a list<double>/struct<…> is not a scalar
+    if "struct" in s: return "struct"
     if "double" in s: return "double"
     if "float" in s: return "float"
     if "string" in s: return "string"
     if s == "bool": return "bool"
     if s.startswith("uint"): return "uint"
     if s.startswith("int"): return "int"
-    if "list" in s: return "list"
-    if "struct" in s: return "struct"
     return s
 
 def type_ok(got, want):
@@ -311,7 +339,6 @@ def p_column_predicate(ar, rule, rep, params):
     badmask = pc.invert(ok)
     nbad = pc.sum(pc.cast(badmask, pa.int64())).as_py() or 0
     if nbad:
-        import numpy as np
         i = int(np.argmax(badmask.to_numpy(zero_copy_only=False)))
         rep.add(rule, rule.get("severity", "error"),
                 f"{f}.{col}: {nbad} of {len(arr)} value(s) {desc}; first at row {i} (value {arr[i].as_py()})",
@@ -328,12 +355,45 @@ def p_dtype_role(ar, rule, rep, params):
                 f"{f}.{col}: stored as {actual} (logical '{ty}'), which is invalid for a '{role}' column "
                 f"(expected one of {allowed})", {"file": f, "column": col})
 
+def declared_sorted(ar, file, dotted_col):
+    """Has the array index for `dotted_col` declared it sorted? Returns:
+      True  — an array-index entry for the column declares a non-null sorting_rank (spec: sorted ascending),
+      False — an entry exists but declares it unsorted (sorting_rank null/absent),
+      None  — no array index / no matching entry (no declaration; caller decides).
+    mzPeak ties m/z ordering to the declared sorting_rank (schema/array_index.json), so monotonicity
+    is only a conformance requirement when the column declares itself sorted."""
+    raw = ar.footer(file, "spectrum_array_index")
+    if raw is None:
+        return None
+    try:
+        idx = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    entries = idx.get("entries", []) if isinstance(idx, dict) else idx if isinstance(idx, list) else []
+    for e in entries:
+        # match THIS column by path only — an array_type fallback would let an entry for a
+        # different column (or a decoy MS:1000514 entry) suppress the check on point.mz.
+        if isinstance(e, dict) and e.get("path") == dotted_col:
+            rank = e.get("sorting_rank")
+            # spec: a (numeric) sorting_rank = sorted ascending; null/absent/non-numeric = not sorted.
+            return isinstance(rank, (int, float)) and not isinstance(rank, bool)
+    return None
+
 def p_grouped_monotonic(ar, rule, rep, params):
     f, grp, col = params["file"], params["group"], params["column"]
     if not (has(ar, f, grp) and has(ar, f, col)): return
-    import numpy as np
+    # Gate on the declared order: the spec only asserts ascending m/z when the array index gives the
+    # column a sorting_rank. A column explicitly declared unsorted is conformant as-is (don't flag).
+    if declared_sorted(ar, f, col) is False:
+        rep.add(rule, "info", f"{f}.{col}: array index declares it unsorted (sorting_rank null/absent); "
+                f"monotonicity not enforced", {"file": f, "column": col})
+        return
     vcol = ar.column(f, col)
-    g = ar.column(f, grp).to_numpy(zero_copy_only=False)
+    gcol = ar.column(f, grp)
+    # Keep an integer group key exact: to_numpy() on a null-containing int column yields float64,
+    # collapsing distinct ids near/above 2^53 into one group. Cast through Arrow instead.
+    g = (pc.fill_null(gcol.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+         if pa.types.is_integer(gcol.type) else gcol.to_numpy(zero_copy_only=False))
     v = vcol.to_numpy(zero_copy_only=False)
     null = pc.is_null(vcol).to_numpy(zero_copy_only=False)    # Arrow nulls are legitimate (null-marking) -> skip
     if len(v) < 2: return
@@ -367,7 +427,6 @@ def p_foreign_key(ar, rule, rep, params):
 def p_index_contiguous(ar, rule, rep, params):
     f, col = params["file"], params["column"]
     if not has(ar, f, col): return
-    import numpy as np
     # ignore nulls: in the packed parallel-facet layout the spectrum facet only populates a subset
     # of rows; its index over those non-null rows must still be 0-based contiguous.
     v = pc.drop_null(ar.column(f, col)).to_numpy(zero_copy_only=False)
@@ -430,7 +489,6 @@ def p_imaging_coordinates(ar, rule, rep, params):
     has_y = any(k.endswith("IMS_1000051_position_y") for k in fields)
     if not (has_x and has_y):
         rep.add(rule, "error", "imaging archive missing position_x and/or position_y column", {"file": f}); return
-    import numpy as np
     for path in [k for k in fields if k.endswith(("IMS_1000050_position_x", "IMS_1000051_position_y"))]:
         v = ar.column(f, path).to_numpy(zero_copy_only=False)
         if len(v) and np.nanmin(v) < 1:

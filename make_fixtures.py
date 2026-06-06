@@ -33,12 +33,17 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False):
     return pa.table({"spectrum": spectrum, "scan": scan}).replace_schema_metadata(
         {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()})
 
-def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64()):
+def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64(), mz_sorting_rank="omit", array_index=None):
     point = pa.StructArray.from_arrays(
         [pa.array(sidx, pa.uint64()), pa.array(mz, mz_type), pa.array(inten, inten_type)],
         names=["spectrum_index", "mz", "intensity"])
-    return pa.table({"point": point}).replace_schema_metadata(
-        {b"spectrum_data_point_count": str(len(sidx)).encode()})
+    kv = {b"spectrum_data_point_count": str(len(sidx)).encode()}
+    if array_index is not None:        # full spectrum_array_index (adversarial fixtures)
+        kv[b"spectrum_array_index"] = json.dumps(array_index).encode()
+    elif mz_sorting_rank != "omit":    # convenience: declare just point.mz's sorting_rank
+        kv[b"spectrum_array_index"] = json.dumps({"prefix": "point", "entries": [
+            {"path": "point.mz", "array_type": "MS:1000514", "sorting_rank": mz_sorting_rank}]}).encode()
+    return pa.table({"point": point}).replace_schema_metadata(kv)
 
 def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
     """Packed parallel-facet metadata: n real spectra + `pad` extra rows where spectrum/scan are
@@ -116,6 +121,25 @@ def build_all(out_root):
     # (B) L1-faithful float widths now accepted by the relaxed column schema
     case("pass", "float32_mz", _meta(), _data(S, MZ, IN, mz_type=pa.float32()), "PASS")                 # 32-bit m/z (imzML)
     case("pass", "float64_intensity", _meta(), _data(S, MZ, IN, inten_type=pa.float64()), "PASS")       # 64-bit intensity
+
+    # sorting_rank gate: monotonicity is enforced only when the array index declares m/z sorted.
+    desc = MZ.copy(); desc[0:4] = [400., 300., 200., 100.]                                              # descending m/z in spectrum 0
+    case("pass", "unsorted_mz_declared_unsorted", _meta(), _data(S, desc, IN, mz_sorting_rank=None),    # declared unsorted -> skipped
+         "PASS")
+    case("fail", "unsorted_mz_declared_sorted", _meta(), _data(S, desc, IN, mz_sorting_rank=0),         # declares sorted but isn't -> FAIL
+         "FAIL", "mz_monotonic_data")
+    # adversarial: a decoy MS:1000514 entry (for point.intensity, no rank) must NOT suppress the
+    # m/z monotonicity gate — declared_sorted matches by path, not array_type (review C2).
+    decoy = {"prefix": "point", "entries": [
+        {"path": "point.intensity", "array_type": "MS:1000514"},
+        {"path": "point.mz", "array_type": "MS:1000514", "sorting_rank": 0}]}
+    case("fail", "decoy_array_index_entry", _meta(), _data(S, desc, IN, array_index=decoy), "FAIL", "mz_monotonic_data")
+
+    # adversarial: an image member naming a path outside the archive must be treated as absent
+    # (not read) — path containment (review C1). Warns image_member_present; never reads the host file.
+    img = {"is_imaging": True, "coordinate_base": 1, "images": [_image_entry(archive_path="../escape.tiff")]}
+    case("pass", "image_path_escape", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         warn="image_member_present", imaging=img)
 
     # imaging archive with an embedded optical TIFF — exercises the image-member primitives (warning-level)
     imeta, idata = _meta(coords=True), _data(S, MZ, IN)
