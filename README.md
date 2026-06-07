@@ -21,16 +21,31 @@ provides the `mzpeak-validate` console command.
 ## Use
 
 ```bash
-mzpeak-validate <archive.mzpeak | unpacked_dir/> [--json report.json] [--log findings.log] [--quick]
-# equivalently, without activating a script entry point:
-python -m mzpeak_validator <archive.mzpeak | unpacked_dir/> ...
+mzpeak-validate <archive.mzpeak | unpacked_dir/> [options]
+# equivalently, without the installed console script:
+python -m mzpeak_validator <archive.mzpeak | unpacked_dir/> [options]
 ```
 
-- Exit code `0` = no errors, `1` = at least one error-level finding, `2` = engine failure.
-- `--quick` skips full-column data scans (metadata-only mode).
-- `--profile DIR` forces a profile; otherwise it is resolved automatically (below).
-- `--json FILE` writes the full machine-readable JSON report; `--log FILE` writes the
-  human-readable findings (the same errors/warnings/info lines printed to the console).
+Arguments and options:
+
+| Argument / option | Meaning |
+|---|---|
+| `<archive>` (required) | a `.mzpeak` ZIP file **or** an unpacked archive directory |
+| `--quick` | skip full-column data scans (the heavy `DATA_SCAN` rules); cheap footer/metadata checks still run |
+| `--json FILE` | write the full machine-readable JSON report to `FILE` |
+| `--log FILE` | write the human-readable findings (the errors/warnings/info lines printed to the console) to `FILE` |
+| `--profile DIR` | force a specific profile directory, overriding version resolution |
+| `--profiles-dir DIR` | root directory holding the `mzpeak-<version>/` profiles (default: the bundled profiles) |
+
+Exit codes: `0` = no errors, `1` = at least one error-level finding, `2` = engine failure.
+
+Examples:
+
+```bash
+mzpeak-validate sample.mzpeak                          # validate, human-readable summary to stdout
+mzpeak-validate sample.mzpeak --json report.json       # also write the full JSON report
+mzpeak-validate big.mzpeak --quick --log findings.log  # metadata-only, save findings to a file
+```
 
 Programmatic use:
 
