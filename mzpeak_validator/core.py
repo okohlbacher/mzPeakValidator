@@ -166,8 +166,11 @@ def discover_profiles(root):
     return {d.name[len("mzpeak-"):]: d for d in Path(root).glob("mzpeak-*")
             if d.is_dir() and (d / "profile.json").is_file()}
 
+def _dict(v):
+    return v if isinstance(v, dict) else {}
+
 def declared_version(archive):
-    fmt = ((archive.index or {}).get("metadata") or {}).get("format") or {}
+    fmt = _dict(_dict((archive.index or {}).get("metadata")).get("format"))
     v = fmt.get("version")
     return str(v) if v is not None else None
 
@@ -263,18 +266,33 @@ class Report:
 INFLECT = re.compile(r"^([A-Za-z]+)_(\d+)_")
 
 def _imaging(ar):
-    md = ((ar.index or {}).get("metadata") or {}).get("imaging")
-    if isinstance(md, dict) and md.get("is_imaging"):
+    if _dict(_dict((ar.index or {}).get("metadata")).get("imaging")).get("is_imaging"):
         return True
     return ar.has_file("spectra_metadata") and any("IMS_1000050" in k for k in ar.fields("spectra_metadata"))
 
 def p_index_files_present(ar, rule, rep, params):
     if not ar.index:
         rep.add(rule, "error", "mzpeak_index.json missing or unreadable"); return
-    for fe in ar.index.get("files", []):
-        name = fe.get("name", "")
-        if not ar.has_file(name):
+    files = ar.index.get("files")
+    if not isinstance(files, list):
+        rep.add(rule, "error", "mzpeak_index.json 'files' is missing or not a list"); return
+    # Members declared as embedded optical images are opaque blobs whose bytes are validated by the
+    # image primitives (member_exists/blob_hash/tiff_magic) via metadata.imaging.images[]; every
+    # OTHER listed member must open as Parquet. Gating on the declared-image registry (not on the
+    # attacker-controlled data_kind/extension) means a mislabelled or corrupt member can't dodge the
+    # parse check.
+    imgs = _dict(_dict(ar.index.get("metadata")).get("imaging")).get("images")
+    images = {e.get("archive_path") for e in (imgs if isinstance(imgs, list) else []) if isinstance(e, dict)}
+    for fe in files:
+        if not isinstance(fe, dict):
+            rep.add(rule, "error", f"index 'files' entry is not an object: {fe!r}"); continue
+        name = fe.get("name") or ""
+        if not isinstance(name, str) or not name:
+            rep.add(rule, "error", f"index 'files' entry has no usable name: {fe!r}"); continue
+        if not ar.has_member(name):
             rep.add(rule, "error", f"index lists missing file: {name}", {"file": name}); continue
+        if name in images:
+            continue                              # declared optical image — bytes checked elsewhere
         try:
             ar.pf(name)
         except Exception as e:

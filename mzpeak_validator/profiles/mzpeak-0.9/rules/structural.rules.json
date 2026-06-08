@@ -6,14 +6,14 @@
     "applies_to": "every mzPeak archive (no layout/imaging gating).",
     "how_to_amend": "Each entry is an instance of a primitive implemented in mzpeak_validator.py (the PRIMITIVES dict). To add or change a check, copy a rule and edit its params. The engine reads only: id, primitive, severity (error|warning), recovery (a class from profile.json / design doc s4: rebuild|recompute|rederive|reorder_pair|normalize|drop|none), params. The 'about' and 'doc' fields are documentation only and are ignored by the engine.",
     "primitives": {
-      "index_files_present": "no params. Walks mzpeak_index.json 'files[]'; errors if a listed file is missing or cannot be opened as Parquet.",
+      "index_files_present": "no params. Walks mzpeak_index.json 'files[]'; errors if a listed member is missing. Every member must open as Parquet EXCEPT those declared as embedded optical images in metadata.imaging.images[] (matched by archive_path) — those are opaque blobs checked by the image primitives, not Parquet-parsed. Gating on the declared-image registry (not on data_kind/extension) keeps a mislabelled/corrupt member from dodging the parse check. Also reports a malformed 'files' list / entry.",
       "data_kind_facet": "params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.",
       "columns_present": "params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float']); type mismatch -> error, recovery rederive."
     }
   },
   "rules": [
     {"id": "index_files_present", "primitive": "index_files_present", "severity": "error", "recovery": "rebuild",
-     "doc": "Every file named in mzpeak_index.json 'files[]' exists in the archive and opens as Parquet. recovery=rebuild: a lost/garbled index can be reconstructed from the present files. No params to tune.",
+     "doc": "Every file named in mzpeak_index.json 'files[]' exists and opens as Parquet, EXCEPT members declared as optical images in metadata.imaging.images[] (existence-checked only; bytes validated by the image primitives). recovery=rebuild: a lost/garbled index can be reconstructed from the present files.",
      "params": {}},
 
     {"id": "data_kind_has_facet", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",

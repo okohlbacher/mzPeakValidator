@@ -141,6 +141,18 @@ def build_all(out_root):
     case("pass", "image_path_escape", _meta(coords=True), _data(S, MZ, IN), "PASS",
          warn="image_member_present", imaging=img)
 
+    # an embedded optical image listed in files[] as other/other must NOT be Parquet-opened by
+    # index_files_present (regression: imaging archives false-failed on the .tif member).
+    case("pass", "indexed_optical_image", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         imaging={"is_imaging": True, "coordinate_base": 1, "images": [_image_entry()]},
+         members={"images/image_0000.tiff": TIFF_BYTES},
+         extra_files=[{"name": "images/image_0000.tiff", "entity_type": "other", "data_kind": "other"}])
+    # adversarial: a non-Parquet member listed in files[] but NOT declared as an optical image must
+    # still be Parquet-opened (and fail) — gating is on the images[] registry, not data_kind (review MEDIUM).
+    case("fail", "indexed_nonparquet_blob", _meta(), _data(S, MZ, IN), "FAIL", "index_files_present",
+         members={"extra.bin": b"not a parquet file"},
+         extra_files=[{"name": "extra.bin", "entity_type": "other", "data_kind": "other"}])
+
     # imaging archive with an embedded optical TIFF — exercises the image-member primitives (warning-level)
     imeta, idata = _meta(coords=True), _data(S, MZ, IN)
     img = {"is_imaging": True, "coordinate_base": 1}
