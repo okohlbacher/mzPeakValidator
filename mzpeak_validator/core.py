@@ -276,13 +276,17 @@ def p_index_files_present(ar, rule, rep, params):
     files = ar.index.get("files")
     if not isinstance(files, list):
         rep.add(rule, "error", "mzpeak_index.json 'files' is missing or not a list"); return
-    # Members declared as embedded optical images are opaque blobs whose bytes are validated by the
-    # image primitives (member_exists/blob_hash/tiff_magic) via metadata.imaging.images[]; every
-    # OTHER listed member must open as Parquet. Gating on the declared-image registry (not on the
-    # attacker-controlled data_kind/extension) means a mislabelled or corrupt member can't dodge the
-    # parse check.
-    imgs = _dict(_dict(ar.index.get("metadata")).get("imaging")).get("images")
-    images = {e.get("archive_path") for e in (imgs if isinstance(imgs, list) else []) if isinstance(e, dict)}
+    # GENERAL RULE: only Parquet facet members (the '*.parquet' data/peaks/metadata tables) are
+    # parse-validated. Every OTHER member in the archive — optical images, embedded sample-metadata
+    # (SDRF/ISA), and ANY other non-Parquet blob — is an opaque member and is SKIPPED from the Parquet
+    # parse; it is not a parquet file and must not be opened as one. Opaque members that carry a writer-
+    # declared digest are still positively verified by their dedicated checks (optical images via
+    # metadata.imaging + the blob_hash primitive; sample-metadata via metadata.sample_metadata below) —
+    # so skipping the parse is never a free pass for a declared blob.
+    sm = _dict(_dict(ar.index.get("metadata")).get("sample_metadata"))
+    sm_declared = {}                              # member name -> (declared sha256, declared size_bytes)
+    if isinstance(sm.get("member"), str) and sm.get("member"):
+        sm_declared[sm["member"]] = (sm.get("sha256"), sm.get("size_bytes"))
     for fe in files:
         if not isinstance(fe, dict):
             rep.add(rule, "error", f"index 'files' entry is not an object: {fe!r}"); continue
@@ -291,8 +295,22 @@ def p_index_files_present(ar, rule, rep, params):
             rep.add(rule, "error", f"index 'files' entry has no usable name: {fe!r}"); continue
         if not ar.has_member(name):
             rep.add(rule, "error", f"index lists missing file: {name}", {"file": name}); continue
-        if name in images:
-            continue                              # declared optical image — bytes checked elsewhere
+        if not name.endswith(".parquet"):
+            # opaque non-Parquet ("Other") member — skipped from the parse check.
+            if name in sm_declared:               # positively verify a declared sample-metadata blob
+                declared, size = sm_declared[name]
+                data = ar.read_member(name)
+                if size is not None and int(size) != len(data):
+                    rep.add(rule, "error",
+                            f"sample-metadata member '{name}': {len(data)} bytes on disk != declared "
+                            f"size_bytes={size}", {"file": name}, recovery="recompute")
+                if declared:
+                    actual = hashlib.new("sha256", data).hexdigest()
+                    if actual.lower() != str(declared).lower():
+                        rep.add(rule, "error",
+                                f"sample-metadata member '{name}': sha256 mismatch (declared {declared}, "
+                                f"actual {actual})", {"file": name}, recovery="recompute")
+            continue
         try:
             ar.pf(name)
         except Exception as e:

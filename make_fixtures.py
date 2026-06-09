@@ -147,9 +147,11 @@ def build_all(out_root):
          imaging={"is_imaging": True, "coordinate_base": 1, "images": [_image_entry()]},
          members={"images/image_0000.tiff": TIFF_BYTES},
          extra_files=[{"name": "images/image_0000.tiff", "entity_type": "other", "data_kind": "other"}])
-    # adversarial: a non-Parquet member listed in files[] but NOT declared as an optical image must
-    # still be Parquet-opened (and fail) — gating is on the images[] registry, not data_kind (review MEDIUM).
-    case("fail", "indexed_nonparquet_blob", _meta(), _data(S, MZ, IN), "FAIL", "index_files_present",
+    # general rule: an indexed non-Parquet member that is not a recognized '*.parquet' facet is an
+    # opaque "Other" blob (here entity_type/data_kind "other") and is SKIPPED from the Parquet parse,
+    # not opened. The archive validates clean; a declared digest (if any) is checked by the dedicated
+    # blob_hash / sample-metadata primitives, not by trying to parse the blob as Parquet.
+    case("pass", "indexed_other_blob_skipped", _meta(), _data(S, MZ, IN), "PASS",
          members={"extra.bin": b"not a parquet file"},
          extra_files=[{"name": "extra.bin", "entity_type": "other", "data_kind": "other"}])
 
