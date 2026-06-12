@@ -187,10 +187,17 @@ def resolve_profile(archive, root, explicit=None):
         raise FileNotFoundError(f"no profiles found under {root}")
     latest = profs[max(profs, key=_vkey)]
     v = declared_version(archive)
-    if v in profs:
-        return profs[v], None
     if v is None:
         return latest, f"no mzpeak version declared; defaulted to latest profile (mzpeak-{latest.name[len('mzpeak-'):]})"
+    if v in profs:
+        return profs[v], None
+    # Semver-tolerant match: a declared patch version (e.g. "0.9.0") resolves to the profile keyed
+    # on its major.minor ("mzpeak-0.9"). The converter declares the spec's full "0.9.0" while
+    # profiles are keyed major.minor — without this an exact-key miss spuriously warned + defaulted.
+    vk = _vkey(v)[:2]
+    for key, prof_dir in profs.items():
+        if _vkey(key)[:2] == vk:
+            return prof_dir, None
     return latest, f"declared version {v!r} has no profile; defaulted to latest (mzpeak-{latest.name[len('mzpeak-'):]})"
 
 class Profile:
