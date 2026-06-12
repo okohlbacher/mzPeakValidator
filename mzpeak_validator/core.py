@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.4"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank
+CATALOG_VERSION = "1.5"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -530,24 +530,63 @@ def p_index_contiguous(ar, rule, rep, params):
                 f"{f}.{col} not 0-based contiguous (len {len(v)} non-null): position {i} is {v[i]}, expected {i}",
                 {"file": f, "column": col, "row": i})
 
+UNIT = re.compile(r"_unit_([A-Za-z]+)_(\d+)")
+
+def _cv_refs(leaf):
+    """CV references in an inflected column leaf: the primary ${CV}_${ACC} plus any _unit_${UCV}_${UACC}."""
+    m = INFLECT.match(leaf)
+    if m and m.group(1) != "ARROW":
+        yield m.group(1), m.group(2)
+    for um in UNIT.finditer(leaf):
+        yield um.group(1), um.group(2)
+
+def _used_cv_codes(ar, files):
+    used = set()
+    for f in files:
+        if ar.has_file(f):
+            for path in ar.fields(f):
+                for code, _ in _cv_refs(path.split(".")[-1]):
+                    used.add(code)
+    return used
+
 def p_cv_inflection(ar, rule, rep, params):
     f, cv = params["file"], params.get("_cv", {})
     if not ar.has_file(f): return
     seen = set()
     for path in ar.fields(f):
         leaf = path.split(".")[-1]
-        m = INFLECT.match(leaf)
-        if not m or m.group(1) == "ARROW":
-            continue
-        code, num = m.group(1), m.group(2)
-        if code not in cv:
-            if (code, num) not in seen:
-                seen.add((code, num))
-                rep.add(rule, "error", f"{f}: column '{leaf}' uses CV code '{code}' not in profile CVs",
+        for code, num in _cv_refs(leaf):          # primary accession AND any unit accession
+            if code not in cv:
+                if (code, num) not in seen:
+                    seen.add((code, num))
+                    rep.add(rule, "error", f"{f}: column '{leaf}' uses CV code '{code}' not in profile CVs",
+                            {"file": f, "column": path})
+            elif f"{code}:{num}" not in cv[code]:
+                rep.add(rule, "warning", f"{f}: '{leaf}' accession {code}:{num} not in pinned {code} CV",
                         {"file": f, "column": path})
-        elif f"{code}:{num}" not in cv[code]:
-            rep.add(rule, "warning", f"{f}: '{leaf}' accession {code}:{num} not in pinned {code} CV",
-                    {"file": f, "column": path})
+
+def p_cv_list_consistency(ar, rule, rep, params):
+    """The file's metadata.cv_list declares every CV code it actually uses (spec: every referenced CV
+    MUST be declared once in the file-level cv_list), and the declared versions match the pinned snapshots."""
+    used = _used_cv_codes(ar, params.get("files", ["spectra_metadata", "chromatograms_metadata"]))
+    if not used:
+        return                                    # no inflected CV columns -> nothing to declare
+    sev = rule.get("severity", "error")
+    cvl = _dig(ar.index or {}, params.get("list", "metadata.cv_list"))
+    if not isinstance(cvl, list) or not cvl:
+        rep.add(rule, sev, f"metadata.cv_list is absent/empty but the archive uses CV codes {sorted(used)}")
+        return
+    declared = {e.get("id") for e in cvl if isinstance(e, dict)}
+    missing = sorted(used - declared)
+    if missing:
+        rep.add(rule, sev, f"CV code(s) used but not declared in metadata.cv_list: {missing} "
+                f"(declared: {sorted(c for c in declared if c)})")
+    pinned = params.get("_cv_versions", {})       # {id: pinned version} from the profile
+    for e in cvl:
+        if isinstance(e, dict) and e.get("id") in pinned and e.get("version") \
+                and str(e["version"]) != str(pinned[e["id"]]):
+            rep.add(rule, "warning", f"cv_list declares {e['id']} version {e['version']}; "
+                    f"profile pins {pinned[e['id']]} (CURIEs resolve against the pinned snapshot)")
 
 def p_count_sum_equals_rows(ar, rule, rep, params):
     """Point-layout integrity: sum of per-spectrum point counts == data-file row count."""
@@ -702,6 +741,7 @@ PRIMITIVES = {
     "count_sum_equals_rows": p_count_sum_equals_rows, "imaging_coordinates": p_imaging_coordinates,
     "member_exists": p_member_exists, "blob_hash": p_blob_hash, "tiff_magic": p_tiff_magic,
     "json_schema": p_json_schema, "grouped_count_equals": p_grouped_count_equals,
+    "cv_list_consistency": p_cv_list_consistency,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
@@ -733,6 +773,9 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
                 params["_columns"] = prof.columns.get(params.get("file"))
             elif prim == "json_schema":
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
+            elif prim == "cv_list_consistency":
+                params["_cv_versions"] = {a["id"]: a.get("version") for a in prof.manifest.get("artifacts", [])
+                                          if a.get("role") == "cv"}
             try:
                 fn(ar, rule, rep, params)
             except Exception as e:

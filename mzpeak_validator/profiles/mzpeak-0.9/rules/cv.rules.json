@@ -6,16 +6,21 @@
     "applies_to": "any table with inflected columns; rules below target the two metadata tables.",
     "how_to_amend": "WHICH CVs exist and which accessions are valid is fixed by the pinned OBO snapshots under cv/ (declared in profile.json 'artifacts'), NOT by these rules. To accept a new CV code, add its OBO as a cv artifact in profile.json. To check inflection on another table, copy a rule and change params.file. 'about'/'doc' are ignored by the engine.",
     "primitives": {
-      "cv_inflection": "params: file (logical table name). The engine injects the set of pinned CV accessions. For each column whose leaf name matches ${CV}_${digits}_...: unknown CV code -> error; known code but accession absent from the pinned OBO -> warning. The literal prefix 'ARROW_' is skipped (it is not a CV)."
+      "cv_inflection": "params: file (logical table name). The engine injects the set of pinned CV accessions. For each column whose leaf name matches ${CV}_${digits}_... (and any _unit_${CV}_${digits} suffix): unknown CV code -> error; known code but accession absent from the pinned OBO -> warning. The literal prefix 'ARROW_' is skipped (it is not a CV).",
+      "cv_list_consistency": "params: [files], [list]. The engine injects the profile's pinned CV versions. Gathers every CV code used in inflected columns (primary + unit accessions) across `files`; requires metadata.cv_list (at `list`) to declare each used code (spec: every referenced CV MUST be declared once in cv_list). Absent/empty cv_list, or a used-but-undeclared code -> error; a declared version != the pinned snapshot -> warning."
     }
   },
   "rules": [
     {"id": "cv_inflection_spectra_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none",
-     "doc": "Inflected columns in spectra_metadata (spectrum/scan/precursor/selected_ion facets) use a pinned CV code and a resolvable accession. severity=error is the code-unknown case; an unresolved accession is downgraded to warning inside the primitive.",
+     "doc": "Inflected columns in spectra_metadata (spectrum/scan/precursor/selected_ion facets) use a pinned CV code and a resolvable accession, INCLUDING unit accessions (_unit_${CV}_${ACC}). severity=error is the code-unknown case; an unresolved accession is downgraded to warning inside the primitive.",
      "params": {"file": "spectra_metadata"}},
 
     {"id": "cv_inflection_chromatograms_metadata", "primitive": "cv_inflection", "severity": "error", "recovery": "none",
      "doc": "Same check for chromatograms_metadata when present (the primitive no-ops if the file is absent, so this is harmless on archives without chromatograms).",
-     "params": {"file": "chromatograms_metadata"}}
+     "params": {"file": "chromatograms_metadata"}},
+
+    {"id": "cv_list_declared", "primitive": "cv_list_consistency", "severity": "error", "recovery": "none",
+     "doc": "metadata.cv_list declares every CV code the archive uses (spec MUST), and its declared CV versions match the profile's pinned snapshots (version mismatch -> warning). Absent cv_list on a file that uses CV codes is an error. This validates the FILE's own declaration (vs cv_inflection, which checks resolvability against the profile's pinned CVs).",
+     "params": {"files": ["spectra_metadata", "chromatograms_metadata"], "list": "metadata.cv_list"}}
   ]
 }

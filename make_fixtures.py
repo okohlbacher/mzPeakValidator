@@ -66,7 +66,12 @@ def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
     return pa.table({"spectrum": spectrum, "scan": scan, "precursor": precursor}).replace_schema_metadata(
         {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(sum(dp)).encode()})
 
-def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None):
+_CV_LIST = [   # CVs the fixtures use; versions match the profile's pinned snapshots
+    {"id": "MS",  "version": "4.1.217",    "uri": "http://purl.obolibrary.org/obo/ms.obo",        "full_name": "PSI-MS"},
+    {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
+    {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}]
+
+def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None):
     if os.path.isdir(d): shutil.rmtree(d)
     os.makedirs(d)
     pq.write_table(meta, f"{d}/spectra_metadata.parquet")
@@ -76,7 +81,9 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
         open(p, "wb").write(payload)
     files = [{"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
              {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"}]
-    metadata = {"version": "0.9", "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
+    metadata = {"version": "0.9",
+                "cv_list": _CV_LIST if cv_list is None else cv_list,
+                "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
     if imaging is not None: metadata["imaging"] = imaging
     json.dump({"files": files + (extra_files or []), "metadata": metadata},
               open(f"{d}/mzpeak_index.json", "w"), indent=1)
@@ -132,6 +139,10 @@ def build_all(out_root):
     # per-spectrum count: declared (2,6,4) sums to 12 (== rows, so data_points_sum passes) but spectrum 0
     # declares 2 and actually has 4 -> only the per-spectrum check catches it.
     case("fail", "per_spectrum_count_swapped", _meta(dp=(2, 6, 4)), _data(S, MZ, IN), "FAIL", "per_spectrum_data_points")
+
+    # CV: the archive uses MS codes but metadata.cv_list declares only UO -> cv_list_declared error.
+    case("fail", "cv_code_undeclared", _meta(), _data(S, MZ, IN), "FAIL", "cv_list_declared",
+         cv_list=[{"id": "UO", "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo", "full_name": "Unit Ontology"}])
 
     # sorting_rank gate: monotonicity is enforced only when the array index declares m/z sorted.
     desc = MZ.copy(); desc[0:4] = [400., 300., 200., 100.]                                              # descending m/z in spectrum 0
