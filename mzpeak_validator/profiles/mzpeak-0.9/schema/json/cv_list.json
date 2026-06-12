@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mzPeak controlled vocabulary list",
+  "description": "Describe the JSON format of the controlled vocabulary list, analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#cvList",
+  "type": "array",
+  "items": {
+    "$ref": "#definitions/cv"
+  },
+  "definitions": {
+    "cv": {
+      "type": "object",
+      "description": "Describe the JSON format of a controlled vocabulary, analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#cv",
+      "required": ["id", "version", "uri"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "The short identifier used for CURIEs from this controlled vocabulary.",
+          "examples": ["MS", "UO", "NCIT", "EFO"]
+        },
+        "version": {
+          "type": "string",
+          "description": "The version for this controlled vocabulary, like a release number, date, or similar. No particular format is expected."
+        },
+        "full_name": {
+          "type": "string",
+          "description": "The usual name for the resource (e.g. The PSI-MS Controlled Vocabulary)."
+        },
+        "uri": {
+          "type": "string",
+          "description": "The URI for the controlled vocabulary."
+        }
+      }
+    }
+  }
+
+}

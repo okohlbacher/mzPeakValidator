@@ -1,0 +1,84 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mzPeak file index JSON",
+  "description": "Describe the JSON format of the file index",
+  "required": ["files", "metadata"],
+  "type": "object",
+  "properties": {
+    "files": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/file" },
+      "description": "The files described in the index"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "version"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "description": "The mzPeak file format version"
+        },
+        "id": {
+          "type": "string",
+          "description": "An optional id for the mzPeak archive used for referencing from external files. It is recommended to use LSIDs when possible."
+        },
+        "accession": {
+          "type": "string",
+          "description": "An optional accession number for the mzPeak archive used for storage, e.g. in PRIDE."
+        },
+        "file_description": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/file_description.json"
+        },
+        "instrument_configuration_list": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/instrument_configuration.json"
+        },
+        "data_processing_method_list": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/data_processing.json"
+        },
+        "software_list": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/software.json"
+        },
+        "sample_list": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/sample.json"
+        },
+        "cv_list": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/cv_list.json"
+        },
+        "run": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/ms_run.json"
+        }
+      }
+    }
+  },
+  "definitions": {
+    "file": {
+      "type": "object",
+      "description": "A single file in the mzPeak archive of a certain type",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The name of the file, relative to the root of the archive"
+        },
+        "entity_type": {
+          "type": "string",
+          "examples": ["spectrum", "chromatogram", "other", "proprietary"],
+          "description": "The things being described in one facet or another by this file"
+        },
+        "data_kind": {
+          "type": "string",
+          "examples": [
+            "data arrays",
+            "metadata",
+            "peaks",
+            "other",
+            "proprietary"
+          ],
+          "description": "The facet of the thing being described in this file"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mzPeak metadata file description",
+  "description": "Describe the JSON format of the file description section",
+  "type": "object",
+  "required": ["contents", "source_files"],
+  "properties": {
+    "contents": {
+        "type": "array",
+        "items": {"$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/param.json"},
+        "description": "Parameters describing the contents of the file, such as types of spectra. Analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#fileContent"
+    },
+    "source_files": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/source_file"
+      },
+      "description": "List of all files used as data sources for this mzPeak file. Analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#sourceFileList"
+    },
+    "contacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/contact"
+      },
+      "description": "Persons or entities responsible for the data contained here."
+    }
+  },
+  "definitions": {
+    "source_file": {
+        "type": "object",
+        "description": "A data file that was read in order to produce this mzPeak file. Analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#sourceFile",
+        "required": ["name", "location", "parameters", "id"],
+        "properties": {
+            "id": {
+              "type": "string",
+              "description": "A unique identifier for this source file."
+            },
+            "name": {
+                "type": "string",
+                "description": "The name of the source file, not including parent directory"
+            },
+            "location": {
+                "type": "string",
+                "description": "The path to the source file, URI encoded. This may include file:// protocols and UNC paths"
+            },
+            "parameters": {
+                "type": "array",
+                "items": {
+                  "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/param.json"
+                },
+                "description": "Additional parameters describing this source file, like checksums, nativeID format, or file format"
+            }
+        }
+    },
+    "contact": {
+      "type": "object",
+      "description": "A person or entity that is responsible for some portion of the data or processing that resulted in this archive. Analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#contact",
+      "required": ["parameters"],
+      "properties": {
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/param.json"
+          },
+          "description": "Parameters describing the contact, such as name, organization, email, website, or address."
+        }
+      }
+    }
+  }
+}

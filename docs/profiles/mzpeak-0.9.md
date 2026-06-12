@@ -4,10 +4,10 @@
 > `python docs/gen_profile_page.py mzpeak_validator/profiles/mzpeak-0.9 > docs/profiles/mzpeak-0.9.md`
 
 - **Profile id:** `mzpeak-0.9`
-- **mzPeak spec:** 0.9 (commit [`d1aaaf845952`](https://github.com/HUPO-PSI/mzPeak))
-- **Rule-primitive catalog:** `1.3` (the cross-language contract the engine implements)
-- **Rules:** 24 across 4 files
-- **Note:** v0.9 = the d1aaaf84 base schema + the agreed imaging determinations (cv_list, scan_settings, pixel key). Pre-1.0: keyed to the spec commit.
+- **mzPeak spec:** 0.9 (commit [`29e59b24f0ae`](https://github.com/HUPO-PSI/mzPeak-specification))
+- **Rule-primitive catalog:** `1.4` (the cross-language contract the engine implements)
+- **Rules:** 39 across 5 files
+- **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
 
@@ -45,13 +45,26 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | cv | MS | 4.1.217 | `cv/psi-ms.obo.gz` |
 | cv | IMS | 1.1.0 | `cv/imagingMS.obo` |
 | cv | UO | 2026-01-16 | `cv/uo.obo` |
-| json-schema | mzpeak_index |  | `schema/mzpeak_index.schema.json` |
+| json-schema | mzpeak_index_legacy |  | `schema/mzpeak_index.schema.json` |
+| json-schema | mzpeak_index |  | `schema/json/mzpeak_index.json` |
+| json-schema | cv_list |  | `schema/json/cv_list.json` |
+| json-schema | file_description |  | `schema/json/file_description.json` |
+| json-schema | instrument_configuration |  | `schema/json/instrument_configuration.json` |
+| json-schema | software |  | `schema/json/software.json` |
+| json-schema | sample |  | `schema/json/sample.json` |
+| json-schema | data_processing |  | `schema/json/data_processing.json` |
+| json-schema | scan_settings_list |  | `schema/json/scan_settings_list.json` |
+| json-schema | ms_run |  | `schema/json/ms_run.json` |
+| json-schema | array_index |  | `schema/json/array_index.json` |
+| json-schema | auxiliary_array |  | `schema/json/auxiliary_array.json` |
+| json-schema | param |  | `schema/json/param.json` |
 | columns | spectra_metadata |  | `schema/tables/spectra_metadata.columns.json` |
 | columns | spectra_data |  | `schema/tables/spectra_data.columns.json` |
 | columns | spectra_peaks |  | `schema/tables/spectra_peaks.columns.json` |
 | rules |  |  | `rules/structural.rules.json` |
 | rules |  |  | `rules/cv.rules.json` |
 | rules |  |  | `rules/numeric.rules.json` |
+| rules |  |  | `rules/metadata.rules.json` |
 | rules |  |  | `rules/imaging.rules.json` |
 
 CV snapshots are pinned OBO files (no live ontology lookup at validate time). `sha256` content-addressing is filled by a future `--seal` step.
@@ -123,6 +136,10 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `point_fk_peaks` | `foreign_key` | error | none | Same FK integrity from spectra_peaks back to spectrum.index. |
 | `scan_source_index_fk` | `foreign_key` | error | rebuild | scan.source_index resolves to a spectrum.index (both in spectra_metadata). allow_null=true: in the packed parallel-facet layout the scan facet is null on rows owned by another facet (e.g. precursor-only PASEF rows), so child nulls are expected and not flagged. recovery=rebuild: the scan<->spectrum map is derivable. |
 | `spectrum_index_contiguous` | `index_contiguous` | warning | none | spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices. |
+| `precursor_source_fk` | `foreign_key` | error | rebuild | precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from. |
+| `selected_ion_source_fk` | `foreign_key` | error | rebuild | selected_ion.source_index resolves to a spectrum.index. allow_null (packed layout). |
+| `per_spectrum_data_points` | `grouped_count_equals` | error | rederive | Per-spectrum integrity: each spectrum's profile-point rows in spectra_data equal its declared number_of_data_points (null counted as 0). Stronger than data_points_sum -- catches localized/swapped count corruption a global sum hides. Gated to the point layout via 'guard'. |
+| `per_spectrum_peaks` | `grouped_count_equals` | error | rederive | Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points. |
 
 ### `imaging.rules.json`
 
@@ -139,9 +156,29 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `image_blob_hash` | `blob_hash` | warning | recompute | A present image member's bytes match its declared sha256 and size_bytes. recovery=recompute: a stale digest is fixable without touching the image. Change 'algo' if a different hash is recorded; null/absent hash fields are skipped per entry. |
 | `image_tiff_magic` | `tiff_magic` | warning | none | An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type. |
 
+### `metadata.rules.json`
+
+**Purpose.** Validate the JSON index and the footer key/value metadata blobs against the bundled mzPeak JSON Schemas (draft-07). Complements the Parquet column-schema checks: those cover the table columns, these cover the JSON metadata the spec governs with schema/*.json.
+
+**Applies to.** every archive (index) + any present footer metadata blob. A blob that is absent is skipped (presence is SHOULD-level; required-presence, e.g. metadata.version / cv_list, is a separate concern).
+
+| Rule id | Primitive | Severity | Recovery | What it checks |
+|---|---|---|---|---|
+| `index_schema_valid` | `json_schema` | error | none | mzpeak_index.json conforms to schema/json/mzpeak_index.json. Catches a malformed index and missing required fields (e.g. the spec now requires metadata.version). |
+| `cv_list_schema_valid` | `json_schema` | error | none | metadata.cv_list (when present) conforms to schema/json/cv_list.json. Absent cv_list is not flagged here (cv_list presence/completeness is the cv-axis' job). |
+| `meta_file_description_valid` | `json_schema` | error | none | spectra_metadata footer 'file_description' blob conforms to schema/json/file_description.json. |
+| `meta_instrument_config_valid` | `json_schema` | error | none | spectra_metadata footer 'instrument_configuration_list' conforms to schema/json/instrument_configuration.json. |
+| `meta_software_valid` | `json_schema` | error | none | spectra_metadata footer 'software_list' conforms to schema/json/software.json. |
+| `meta_sample_valid` | `json_schema` | error | none | spectra_metadata footer 'sample_list' conforms to schema/json/sample.json. |
+| `meta_data_processing_valid` | `json_schema` | error | none | spectra_metadata footer 'data_processing_method_list' conforms to schema/json/data_processing.json. |
+| `meta_run_valid` | `json_schema` | error | none | spectra_metadata footer 'run' conforms to schema/json/ms_run.json. |
+| `meta_scan_settings_valid` | `json_schema` | error | none | spectra_metadata footer 'scan_settings_list' (imaging/run geometry) conforms to schema/json/scan_settings_list.json when present. |
+| `array_index_data_valid` | `json_schema` | error | none | spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json (entries, path, buffer_format, data/array types, sorting_rank, ...). |
+| `array_index_peaks_valid` | `json_schema` | error | none | spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json. |
+
 ## Primitive catalog (param contracts)
 
-The 15 primitives used by this profile and the parameters each accepts:
+The 17 primitives used by this profile and the parameters each accepts:
 
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
@@ -152,10 +189,12 @@ The 15 primitives used by this profile and the parameters each accepts:
 - **`dtype_role`** — params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].
 - **`footer_count_equals_rows`** — params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.
 - **`foreign_key`** — params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).
+- **`grouped_count_equals`** — params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows.
 - **`grouped_monotonic`** — params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.
 - **`imaging_coordinates`** — no params. If imaging, requires IMS_1000050_position_x AND IMS_1000051_position_y columns (checked independently) and that their minimum value is >= 1 (1-based).
 - **`index_contiguous`** — params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored).
 - **`index_files_present`** — no params. Walks mzpeak_index.json 'files[]'; errors if a listed member is missing. Every member must open as Parquet EXCEPT those declared as embedded optical images in metadata.imaging.images[] (matched by archive_path) — those are opaque blobs checked by the image primitives, not Parquet-parsed. Gating on the declared-image registry (not on data_kind/extension) keeps a mislabelled/corrupt member from dodging the parse check. Also reports a malformed 'files' list / entry.
+- **`json_schema`** — params: schema (bundled schema id) + a source: {index:true} (the whole mzpeak_index.json), {index_path:'a.b'} (a dotted sub-path of the index), or {file, footer_key} (a JSON blob from a Parquet footer KV pair). Validates with jsonschema Draft7; each violation -> error at its JSON path. Present-but-unparseable -> error; absent -> skipped.
 - **`member_exists`** — params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.
 - **`tiff_magic`** — params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\0 little-endian or MM\0* big-endian).
 

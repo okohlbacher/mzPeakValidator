@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.3"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank
+CATALOG_VERSION = "1.4"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -170,8 +170,12 @@ def _dict(v):
     return v if isinstance(v, dict) else {}
 
 def declared_version(archive):
-    fmt = _dict(_dict((archive.index or {}).get("metadata")).get("format"))
-    v = fmt.get("version")
+    md = _dict((archive.index or {}).get("metadata"))
+    # current spec puts the archive version at metadata.version; accept the legacy
+    # metadata.format.version too (the field moved when the spec formalised it).
+    v = md.get("version")
+    if v is None:
+        v = _dict(md.get("format")).get("version")
     return str(v) if v is not None else None
 
 def resolve_profile(archive, root, explicit=None):
@@ -199,6 +203,11 @@ class Profile:
         self.columns = {}
         for cf in sorted((self.root / "schema" / "tables").glob("*.columns.json")):
             spec = json.loads(cf.read_text()); self.columns[spec["file"]] = spec
+        self.json_schemas = {}
+        jdir = self.root / "schema" / "json"
+        if jdir.is_dir():
+            for jf in sorted(jdir.glob("*.json")):
+                self.json_schemas[jf.stem] = json.loads(jf.read_text())
         self.cv = self._load_cv()
 
     def _load_cv(self):
@@ -339,6 +348,54 @@ def p_columns_present(ar, rule, rep, params):
                 exp = " or ".join(want) if isinstance(want, list) else want
                 rep.add(rule, "error", f"{f}.{path}: type {arrow_logical(got)} != expected {exp}",
                         {"file": f, "column": path}, recovery="rederive")
+
+_ABSENT = object()
+
+def _json_source(ar, params):
+    """Return (json_value, where) for a json_schema rule, or (_ABSENT, where) when not present.
+    Sources: {index:true} -> whole index; {index_path:'a.b'} -> dotted path into the index;
+    {file, footer_key} -> a JSON blob from a Parquet footer key/value pair."""
+    if params.get("index"):
+        return (ar.index, "mzpeak_index.json") if ar.index is not None else (_ABSENT, "mzpeak_index.json")
+    ip = params.get("index_path")
+    if ip:
+        v = _dig(ar.index or {}, ip)
+        return (v, f"mzpeak_index.json:{ip}") if v is not None else (_ABSENT, f"mzpeak_index.json:{ip}")
+    f, key = params.get("file"), params.get("footer_key")
+    where = f"{f}:{key}"
+    if not (f and key and ar.has_file(f)):
+        return _ABSENT, where
+    raw = ar.footer(f, key)
+    if raw is None:
+        return _ABSENT, where
+    try:
+        return json.loads(raw), where
+    except (ValueError, TypeError) as e:
+        return ("__BADJSON__", e), where    # signal: present but unparseable
+
+def p_json_schema(ar, rule, rep, params):
+    """Validate a JSON document (the index, a sub-path of it, or a footer metadata blob) against a
+    bundled JSON Schema. Self-gates: a footer blob that is absent is not flagged here (presence is a
+    SHOULD; required-presence is enforced by dedicated rules)."""
+    schema = params.get("_schema")
+    if schema is None:
+        return                                  # schema not bundled in this profile -> skip
+    doc, where = _json_source(ar, params)
+    if doc is _ABSENT:
+        return
+    if isinstance(doc, tuple) and doc[0] == "__BADJSON__":
+        rep.add(rule, "error", f"{where}: not valid JSON ({doc[1]})", {"file": params.get('file', '')}); return
+    try:
+        import jsonschema
+        validator = jsonschema.Draft7Validator(schema)
+        errs = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
+    except Exception as e:                       # pragma: no cover - jsonschema absent/broken
+        rep.add(rule, "warning", f"{where}: could not run JSON-Schema validation ({type(e).__name__}: {e})"); return
+    sev = rule.get("severity", "error")
+    for e in errs:
+        loc = "/".join(str(p) for p in e.path) or "(root)"
+        rep.add(rule, sev, f"{where}: schema violation at {loc}: {e.message}",
+                {"file": params.get("file", ""), "column": loc})
 
 def p_footer_count_equals_rows(ar, rule, rep, params):
     f, key = params["file"], params["footer_key"]
@@ -503,6 +560,42 @@ def p_count_sum_equals_rows(ar, rule, rep, params):
         rep.add(rule, "error", f"{f}: sum({cnt_col})={total} != {f} rows={ar.num_rows(f)}",
                 {"file": f}, recovery="rederive")
 
+def p_grouped_count_equals(ar, rule, rep, params):
+    """Per-spectrum count integrity: the number of signal rows for each spectrum equals that
+    spectrum's declared count. Stronger than count_sum_equals_rows (catches localized/swapped
+    corruption that a global sum hides). Null declared count is treated as 0 (centroid spectra have
+    no profile points; their data lives in spectra_peaks)."""
+    f, grp = params["file"], params["group"]                      # signal table + its group column (point.spectrum_index)
+    cf, cc = params.get("count_file", "spectra_metadata"), params["count_column"]
+    key = params.get("key_column", "spectrum.index")
+    if not (has(ar, f, params.get("guard", grp)) and has(ar, cf, cc) and has(ar, cf, key)):
+        return
+    g = ar.column(f, grp)
+    gv = g.to_numpy(zero_copy_only=False)
+    gv = gv[~pc.is_null(g).to_numpy(zero_copy_only=False)]        # signal rows have non-null group ids
+    actual_ids, actual_cnt = np.unique(gv, return_counts=True)
+    actual = dict(zip(actual_ids.tolist(), actual_cnt.tolist()))
+    kcol = ar.column(cf, key); ccol = ar.column(cf, cc)
+    kv = kcol.to_numpy(zero_copy_only=False)
+    cvv = ccol.to_numpy(zero_copy_only=False)
+    knull = pc.is_null(kcol).to_numpy(zero_copy_only=False)
+    cnull = pc.is_null(ccol).to_numpy(zero_copy_only=False)
+    bad = 0; first = None
+    for i in range(len(kv)):
+        if knull[i]:
+            continue                                              # padding row of a packed facet
+        sid = int(kv[i])
+        declared = 0 if cnull[i] else int(cvv[i])
+        got = int(actual.get(sid, 0))
+        if got != declared:
+            bad += 1
+            if first is None: first = (sid, declared, got)
+    if bad:
+        sid, declared, got = first
+        rep.add(rule, rule.get("severity", "error"),
+                f"{f}: per-spectrum count mismatch in {bad} spectrum/spectra; spectrum.index={sid} declares "
+                f"{cc.split('.')[-1]}={declared} but {f} has {got} row(s)", {"file": f}, recovery="rederive")
+
 def p_data_kind_facet(ar, rule, rep, params):
     """A file whose index data_kind promises signal must carry a recognized signal facet."""
     if not ar.index: return
@@ -608,10 +701,11 @@ PRIMITIVES = {
     "index_contiguous": p_index_contiguous, "cv_inflection": p_cv_inflection,
     "count_sum_equals_rows": p_count_sum_equals_rows, "imaging_coordinates": p_imaging_coordinates,
     "member_exists": p_member_exists, "blob_hash": p_blob_hash, "tiff_magic": p_tiff_magic,
+    "json_schema": p_json_schema, "grouped_count_equals": p_grouped_count_equals,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
-             "count_sum_equals_rows", "blob_hash"}
+             "count_sum_equals_rows", "blob_hash", "grouped_count_equals"}
 
 # -------------------------------------------------------------------------------- run
 def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
@@ -637,6 +731,8 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
                 params["_cv"] = prof.cv
             elif prim == "columns_present":
                 params["_columns"] = prof.columns.get(params.get("file"))
+            elif prim == "json_schema":
+                params["_schema"] = prof.json_schemas.get(params.get("schema"))
             try:
                 fn(ar, rule, rep, params)
             except Exception as e:

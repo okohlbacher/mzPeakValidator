@@ -18,7 +18,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Bio-Informatics",
   "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow>=12", "numpy"]
+dependencies = ["pyarrow>=12", "numpy", "jsonschema>=3"]
 
 [project.scripts]
 mzpeak-validate = "mzpeak_validator.core:main"

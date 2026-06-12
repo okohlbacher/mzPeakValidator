@@ -1,0 +1,57 @@
+{
+  "about": {
+    "file": "metadata.rules.json",
+    "axis": "schema (JSON side)",
+    "purpose": "Validate the JSON index and the footer key/value metadata blobs against the bundled mzPeak JSON Schemas (draft-07). Complements the Parquet column-schema checks: those cover the table columns, these cover the JSON metadata the spec governs with schema/*.json.",
+    "applies_to": "every archive (index) + any present footer metadata blob. A blob that is absent is skipped (presence is SHOULD-level; required-presence, e.g. metadata.version / cv_list, is a separate concern).",
+    "how_to_amend": "Each rule names a bundled schema (schema/json/<id>.json, registered as a json-schema artifact in profile.json) and a source. To validate another blob, copy a rule and set the schema id + source. 'about'/'doc' are ignored by the engine.",
+    "primitives": {
+      "json_schema": "params: schema (bundled schema id) + a source: {index:true} (the whole mzpeak_index.json), {index_path:'a.b'} (a dotted sub-path of the index), or {file, footer_key} (a JSON blob from a Parquet footer KV pair). Validates with jsonschema Draft7; each violation -> error at its JSON path. Present-but-unparseable -> error; absent -> skipped."
+    }
+  },
+  "rules": [
+    {"id": "index_schema_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "mzpeak_index.json conforms to schema/json/mzpeak_index.json. Catches a malformed index and missing required fields (e.g. the spec now requires metadata.version).",
+     "params": {"index": true, "schema": "mzpeak_index"}},
+
+    {"id": "cv_list_schema_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "metadata.cv_list (when present) conforms to schema/json/cv_list.json. Absent cv_list is not flagged here (cv_list presence/completeness is the cv-axis' job).",
+     "params": {"index_path": "metadata.cv_list", "schema": "cv_list"}},
+
+    {"id": "meta_file_description_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'file_description' blob conforms to schema/json/file_description.json.",
+     "params": {"file": "spectra_metadata", "footer_key": "file_description", "schema": "file_description"}},
+
+    {"id": "meta_instrument_config_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'instrument_configuration_list' conforms to schema/json/instrument_configuration.json.",
+     "params": {"file": "spectra_metadata", "footer_key": "instrument_configuration_list", "schema": "instrument_configuration"}},
+
+    {"id": "meta_software_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'software_list' conforms to schema/json/software.json.",
+     "params": {"file": "spectra_metadata", "footer_key": "software_list", "schema": "software"}},
+
+    {"id": "meta_sample_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'sample_list' conforms to schema/json/sample.json.",
+     "params": {"file": "spectra_metadata", "footer_key": "sample_list", "schema": "sample"}},
+
+    {"id": "meta_data_processing_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'data_processing_method_list' conforms to schema/json/data_processing.json.",
+     "params": {"file": "spectra_metadata", "footer_key": "data_processing_method_list", "schema": "data_processing"}},
+
+    {"id": "meta_run_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'run' conforms to schema/json/ms_run.json.",
+     "params": {"file": "spectra_metadata", "footer_key": "run", "schema": "ms_run"}},
+
+    {"id": "meta_scan_settings_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_metadata footer 'scan_settings_list' (imaging/run geometry) conforms to schema/json/scan_settings_list.json when present.",
+     "params": {"file": "spectra_metadata", "footer_key": "scan_settings_list", "schema": "scan_settings_list"}},
+
+    {"id": "array_index_data_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json (entries, path, buffer_format, data/array types, sorting_rank, ...).",
+     "params": {"file": "spectra_data", "footer_key": "spectrum_array_index", "schema": "array_index"}},
+
+    {"id": "array_index_peaks_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json.",
+     "params": {"file": "spectra_peaks", "footer_key": "spectrum_array_index", "schema": "array_index"}}
+  ]
+}

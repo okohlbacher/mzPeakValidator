@@ -13,7 +13,8 @@
       "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
       "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
       "foreign_key": "params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).",
-      "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored)."
+      "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored).",
+      "grouped_count_equals": "params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows."
     }
   },
   "rules": [
@@ -67,6 +68,22 @@
 
     {"id": "spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
      "doc": "spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
-     "params": {"file": "spectra_metadata", "column": "spectrum.index"}}
+     "params": {"file": "spectra_metadata", "column": "spectrum.index"}},
+
+    {"id": "precursor_source_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from.",
+     "params": {"file": "spectra_metadata", "column": "precursor.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
+
+    {"id": "selected_ion_source_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "selected_ion.source_index resolves to a spectrum.index. allow_null (packed layout).",
+     "params": {"file": "spectra_metadata", "column": "selected_ion.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
+
+    {"id": "per_spectrum_data_points", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
+     "doc": "Per-spectrum integrity: each spectrum's profile-point rows in spectra_data equal its declared number_of_data_points (null counted as 0). Stronger than data_points_sum -- catches localized/swapped count corruption a global sum hides. Gated to the point layout via 'guard'.",
+     "params": {"file": "spectra_data", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003060_number_of_data_points", "key_column": "spectrum.index"}},
+
+    {"id": "per_spectrum_peaks", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
+     "doc": "Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points.",
+     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003059_number_of_peaks", "key_column": "spectrum.index"}}
   ]
 }

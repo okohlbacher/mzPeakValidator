@@ -18,7 +18,7 @@ IN = [5., 4., 3., 2.] * 3
 TIFF_BYTES = b"II*\x00" + bytes(12)
 NOT_TIFF_BYTES = b"NOT-A-TIFF!!" + bytes(4)
 
-def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False):
+def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_footer=None):
     cols = [pa.array(range(n), pa.uint64()), pa.array([1] * n, pa.uint8()),
             pa.array(["MS:1000127"] * n, pa.large_string()), pa.array(list(dp), pa.uint64())]
     names = ["index", "MS_1000511_ms_level", "MS_1000525_spectrum_representation", "MS_1003060_number_of_data_points"]
@@ -30,8 +30,10 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False):
         scols += [pa.array(range(1, n + 1), pa.int64()), pa.array([1] * n, pa.int64())]
         snames += ["IMS_1000050_position_x", "IMS_1000051_position_y"]
     scan = pa.StructArray.from_arrays(scols, names=snames)
-    return pa.table({"spectrum": spectrum, "scan": scan}).replace_schema_metadata(
-        {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()})
+    kv = {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()}
+    for k, v in (extra_footer or {}).items():            # extra footer KV blobs (e.g. file_description JSON)
+        kv[k.encode() if isinstance(k, str) else k] = v.encode() if isinstance(v, str) else v
+    return pa.table({"spectrum": spectrum, "scan": scan}).replace_schema_metadata(kv)
 
 def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64(), mz_sorting_rank="omit", array_index=None):
     point = pa.StructArray.from_arrays(
@@ -59,7 +61,8 @@ def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
         mask=pa.array([False] * n + [True] * pad))     # struct-level null on the padded rows
     scan = pa.StructArray.from_arrays([pad_arr(range(n), pa.uint64())], names=["source_index"],
                                       mask=pa.array([False] * n + [True] * pad))
-    precursor = pa.StructArray.from_arrays([pa.array(range(total_rows), pa.uint64())], names=["source_index"])
+    # precursor.source_index must reference a real spectrum (FK to spectrum.index): cycle 0..n-1
+    precursor = pa.StructArray.from_arrays([pa.array([i % n for i in range(total_rows)], pa.uint64())], names=["source_index"])
     return pa.table({"spectrum": spectrum, "scan": scan, "precursor": precursor}).replace_schema_metadata(
         {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(sum(dp)).encode()})
 
@@ -73,7 +76,7 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
         open(p, "wb").write(payload)
     files = [{"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
              {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"}]
-    metadata = {"format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
+    metadata = {"version": "0.9", "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
     if imaging is not None: metadata["imaging"] = imaging
     json.dump({"files": files + (extra_files or []), "metadata": metadata},
               open(f"{d}/mzpeak_index.json", "w"), indent=1)
@@ -121,6 +124,14 @@ def build_all(out_root):
     # (B) L1-faithful float widths now accepted by the relaxed column schema
     case("pass", "float32_mz", _meta(), _data(S, MZ, IN, mz_type=pa.float32()), "PASS")                 # 32-bit m/z (imzML)
     case("pass", "float64_intensity", _meta(), _data(S, MZ, IN, inten_type=pa.float64()), "PASS")       # 64-bit intensity
+
+    # JSON-Schema validation: a footer metadata blob that isn't valid JSON -> error (json_schema primitive)
+    case("fail", "bad_file_description_blob", _meta(extra_footer={"file_description": "{ not valid json"}),
+         _data(S, MZ, IN), "FAIL", "meta_file_description_valid")
+
+    # per-spectrum count: declared (2,6,4) sums to 12 (== rows, so data_points_sum passes) but spectrum 0
+    # declares 2 and actually has 4 -> only the per-spectrum check catches it.
+    case("fail", "per_spectrum_count_swapped", _meta(dp=(2, 6, 4)), _data(S, MZ, IN), "FAIL", "per_spectrum_data_points")
 
     # sorting_rank gate: monotonicity is enforced only when the array index declares m/z sorted.
     desc = MZ.copy(); desc[0:4] = [400., 300., 200., 100.]                                              # descending m/z in spectrum 0

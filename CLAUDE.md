@@ -59,10 +59,10 @@ To add/adjust a check: copy a rule and edit its `params`. To change *which colum
 
 1. Write `p_<name>(ar, rule, rep, params)` in `mzpeak_validator/core.py` and register it in `PRIMITIVES`.
 2. If it does heavy full-column / full-member I/O, add its name to `DATA_SCAN` so `--quick` skips it.
-3. Bump `CATALOG_VERSION` **and** the profile's `rule_primitive_catalog` together (engine warns on mismatch). Currently both are **`1.3`** (1.1 image primitives; 1.2 list types + footer `count_column`; 1.3 `grouped_monotonic` gated on declared `sorting_rank`).
+3. Bump `CATALOG_VERSION` **and** the profile's `rule_primitive_catalog` together (engine warns on mismatch). Currently both are **`1.4`** (1.1 image primitives; 1.2 list types + footer `count_column`; 1.3 `grouped_monotonic` gated on declared `sorting_rank`; 1.4 `json_schema` + `grouped_count_equals`, profile re-pinned to the current spec `HUPO-PSI/mzPeak-specification`).
 4. Add a fixture in `make_fixtures.py` and keep `smoke_test.py` green. For warning-level rules, set `expected.json`'s `warn_rule` (the harness asserts warnings separately from the FAIL-verdict error rules).
 
-The current 15 primitives: `index_files_present, columns_present, data_kind_facet, footer_count_equals_rows, column_predicate (ge/gt/le/lt/finite), dtype_role, grouped_monotonic, foreign_key, index_contiguous, cv_inflection, count_sum_equals_rows, imaging_coordinates` + the v1.1 **raw-member image** primitives `member_exists, blob_hash, tiff_magic` (operate on archive members, not Parquet).
+The current 17 primitives: `index_files_present, columns_present, data_kind_facet, footer_count_equals_rows, column_predicate (ge/gt/le/lt/finite), dtype_role, grouped_monotonic, foreign_key, index_contiguous, cv_inflection, count_sum_equals_rows, imaging_coordinates` + the v1.1 **raw-member image** primitives `member_exists, blob_hash, tiff_magic` + v1.4 `json_schema` (validate the index / footer metadata blobs against the bundled `schema/json/*.json` draft-07 schemas) and `grouped_count_equals` (per-spectrum count integrity). Bundled JSON schemas live under `profiles/mzpeak-0.9/schema/json/`. Full-scope roadmap: [docs/roadmap-full-conformance.md](docs/roadmap-full-conformance.md).
 
 ## Hard-won facts about real mzPeak (don't re-learn these)
 
