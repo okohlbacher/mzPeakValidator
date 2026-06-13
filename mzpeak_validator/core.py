@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.5"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank
+CATALOG_VERSION = "1.6"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -589,11 +589,19 @@ def p_cv_list_consistency(ar, rule, rep, params):
         rep.add(rule, sev, f"CV code(s) used but not declared in metadata.cv_list: {missing} "
                 f"(declared: {sorted(c for c in declared if c)})")
     pinned = params.get("_cv_versions", {})       # {id: pinned version} from the profile
+    # Version policy: warn ONLY when the file declares a CV version NEWER than the validator's pinned
+    # snapshot — that means the validator is behind and should refresh its bundled CV (its CURIE
+    # resolution may be stale). A file pinned to the SAME or an OLDER version is expected and benign,
+    # so it must NOT warn (a plain difference is not a problem). _vkey extracts numeric components,
+    # so it orders both dotted ("4.1.248") and date ("2026-01-16") version strings.
     for e in cvl:
-        if isinstance(e, dict) and e.get("id") in pinned and e.get("version") \
-                and str(e["version"]) != str(pinned[e["id"]]):
-            rep.add(rule, "warning", f"cv_list declares {e['id']} version {e['version']}; "
-                    f"profile pins {pinned[e['id']]} (CURIEs resolve against the pinned snapshot)")
+        if not (isinstance(e, dict) and e.get("id") in pinned and e.get("version")):
+            continue
+        declared_v, pinned_v = str(e["version"]), str(pinned[e["id"]])
+        if _vkey(declared_v) > _vkey(pinned_v):
+            rep.add(rule, "warning", f"cv_list declares {e['id']} version {declared_v}, newer than the "
+                    f"profile's pinned {pinned_v} — update the validator's bundled {e['id']} CV snapshot "
+                    f"(CURIEs currently resolve against the older pinned copy)")
 
 def p_count_sum_equals_rows(ar, rule, rep, params):
     """Point-layout integrity: sum of per-spectrum point counts == data-file row count."""

@@ -67,7 +67,7 @@ def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
         {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(sum(dp)).encode()})
 
 _CV_LIST = [   # CVs the fixtures use; versions match the profile's pinned snapshots
-    {"id": "MS",  "version": "4.1.217",    "uri": "http://purl.obolibrary.org/obo/ms.obo",        "full_name": "PSI-MS"},
+    {"id": "MS",  "version": "4.1.254",    "uri": "http://purl.obolibrary.org/obo/ms.obo",        "full_name": "PSI-MS"},
     {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
     {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}]
 
@@ -143,6 +143,14 @@ def build_all(out_root):
     # CV: the archive uses MS codes but metadata.cv_list declares only UO -> cv_list_declared error.
     case("fail", "cv_code_undeclared", _meta(), _data(S, MZ, IN), "FAIL", "cv_list_declared",
          cv_list=[{"id": "UO", "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo", "full_name": "Unit Ontology"}])
+
+    # CV version policy: a declared CV version NEWER than the profile's pinned snapshot -> warning
+    # (the validator is behind; update its bundled CVs), but the file still PASSES. A same-or-older
+    # declared version must NOT warn — the default 'pass/valid' fixture (cv_list pinned-exact) covers that.
+    case("pass", "cv_version_newer_than_pin", _meta(), _data(S, MZ, IN), "PASS", warn="cv_list_declared",
+         cv_list=[{"id": "MS",  "version": "4.1.999",    "uri": "http://purl.obolibrary.org/obo/ms.obo",        "full_name": "PSI-MS"},
+                  {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
+                  {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}])
 
     # sorting_rank gate: monotonicity is enforced only when the array index declares m/z sorted.
     desc = MZ.copy(); desc[0:4] = [400., 300., 200., 100.]                                              # descending m/z in spectrum 0
