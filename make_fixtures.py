@@ -47,6 +47,18 @@ def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64(), mz_sor
             {"path": "point.mz", "array_type": "MS:1000514", "sorting_rank": mz_sorting_rank}]}).encode()
     return pa.table({"point": point}).replace_schema_metadata(kv)
 
+def _chunk_data(n=3):
+    """Chunked spectra_data facet (one whole-spectrum m/z chunk per spectrum, numpress-linear). The
+    point-layout numeric/count rules self-skip (no `point` facet), so a chunk archive validates clean;
+    used to pin that, and that parquet_row_group_health does not false-fire on a tiny single-group file."""
+    chunk = pa.StructArray.from_arrays(
+        [pa.array(range(n), pa.uint64()), pa.array([100.] * n, pa.float64()), pa.array([400.] * n, pa.float64()),
+         pa.array([[100., 200., 300., 400.]] * n, pa.large_list(pa.float64())),
+         pa.array(["numpress-linear"] * n, pa.large_string()),
+         pa.array([[5., 4., 3., 2.]] * n, pa.large_list(pa.float64()))],
+        names=["spectrum_index", "mz_chunk_start", "mz_chunk_end", "mz_chunk_values", "chunk_encoding", "intensity"])
+    return pa.table({"chunk": chunk}).replace_schema_metadata({b"spectrum_data_point_count": str(n * 4).encode()})
+
 def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
     """Packed parallel-facet metadata: n real spectra + `pad` extra rows where spectrum/scan are
     NULL (as a PASEF table padded by a longer precursor facet). footer spectrum_count = n."""
@@ -127,6 +139,10 @@ def build_all(out_root):
     # (A) packed parallel-facet layout: rows (7) > spectra (3); footer spectrum_count=3 must agree
     # with non-null spectrum.index, not the row count. Regression for the PASEF/TIMS false positive.
     case("pass", "packed_facets_multirow", _meta_packed(n=3, pad=4), _data(S, MZ, IN), "PASS")
+
+    # chunk layout validates clean (point-only rules self-skip); parquet_row_group_health is advisory
+    # and must NOT false-fire on this tiny single-row-group file (its 64 MB threshold is far above).
+    case("pass", "chunk_layout", _meta(), _chunk_data(), "PASS")
 
     # (B) L1-faithful float widths now accepted by the relaxed column schema
     case("pass", "float32_mz", _meta(), _data(S, MZ, IN, mz_type=pa.float32()), "PASS")                 # 32-bit m/z (imzML)

@@ -5,8 +5,8 @@
 
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`29e59b24f0ae`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.6` (the cross-language contract the engine implements)
-- **Rules:** 40 across 5 files
+- **Rule-primitive catalog:** `1.7` (the cross-language contract the engine implements)
+- **Rules:** 41 across 6 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -66,6 +66,7 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | rules |  |  | `rules/numeric.rules.json` |
 | rules |  |  | `rules/metadata.rules.json` |
 | rules |  |  | `rules/imaging.rules.json` |
+| rules |  |  | `rules/perf.rules.json` |
 
 CV snapshots are pinned OBO files (no live ontology lookup at validate time). `sha256` content-addressing is filled by a future `--seal` step.
 
@@ -177,9 +178,19 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `array_index_data_valid` | `json_schema` | error | none | spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json (entries, path, buffer_format, data/array types, sorting_rank, ...). |
 | `array_index_peaks_valid` | `json_schema` | error | none | spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json. |
 
+### `perf.rules.json`
+
+**Purpose.** Advisory, NON-conformance checks on the PHYSICAL Parquet layout that affect random-access read performance. These never FAIL an archive (warning-only): the data is correct, but laid out so that single-spectrum / random reads are expensive. Mirrors the spec's reader-friendly row-group sizing guidance.
+
+**Applies to.** chunked data facets (spectra_data / chromatograms_data carrying a `chunk` struct). The point/peaks per-peak layout is chunked correctly by the writer and is not flagged.
+
+| Rule id | Primitive | Severity | Recovery | What it checks |
+|---|---|---|---|---|
+| `data_row_group_not_monolithic` | `parquet_row_group_health` | warning | normalize | Advisory (perf, not conformance): a chunked spectra_data / chromatograms_data facet should not be stored in a single oversized Parquet row group. Parquet reads/decodes at row-group granularity, so a lone monolithic group means every random single-spectrum read decodes the whole group (the converter's chunk path can emit one group because its row-group cap is a row count, and one chunk-row is a whole-spectrum list). Writers should bound row groups by uncompressed size or point count (e.g. <= ~64 MB / ~2 M points). Warning-only; never fails an archive. |
+
 ## Primitive catalog (param contracts)
 
-The 18 primitives used by this profile and the parameters each accepts:
+The 19 primitives used by this profile and the parameters each accepts:
 
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
@@ -198,6 +209,7 @@ The 18 primitives used by this profile and the parameters each accepts:
 - **`index_files_present`** — no params. Walks mzpeak_index.json 'files[]'; errors if a listed member is missing. Every member must open as Parquet EXCEPT those declared as embedded optical images in metadata.imaging.images[] (matched by archive_path) — those are opaque blobs checked by the image primitives, not Parquet-parsed. Gating on the declared-image registry (not on data_kind/extension) keeps a mislabelled/corrupt member from dodging the parse check. Also reports a malformed 'files' list / entry.
 - **`json_schema`** — params: schema (bundled schema id) + a source: {index:true} (the whole mzpeak_index.json), {index_path:'a.b'} (a dotted sub-path of the index), or {file, footer_key} (a JSON blob from a Parquet footer KV pair). Validates with jsonschema Draft7; each violation -> error at its JSON path. Present-but-unparseable -> error; absent -> skipped.
 - **`member_exists`** — params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.
+- **`parquet_row_group_health`** — params: [files], [facet], [min_bytes]. Footer-only (no column decode; runs under --quick). For each `files` entry that carries the `facet` top-level struct (default 'chunk'): if the Parquet file has exactly ONE row group whose uncompressed total_byte_size exceeds min_bytes (default 67108864 = 64 MB) -> warning. A multi-row-group file, a small single-group file, or a non-chunk (point/peaks) layout does NOT warn.
 - **`tiff_magic`** — params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\0 little-endian or MM\0* big-endian).
 
 ## Column schemas

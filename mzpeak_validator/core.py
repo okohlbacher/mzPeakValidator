@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.6"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference
+CATALOG_VERSION = "1.7"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group)
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -747,9 +747,34 @@ def p_tiff_magic(ar, rule, rep, params):
             rep.add(rule, sev, f"image member '{name}' declared {want_mt} but is not a TIFF "
                     f"(first 4 bytes {head!r}; expected b'II*\\x00' or b'MM\\x00*')", {"file": name})
 
+def p_parquet_row_group_health(ar, rule, rep, params):
+    """Advisory (perf, NOT conformance): a chunked data facet stored in a single monolithic Parquet
+    row group makes every random single-spectrum read decode the whole group. Warns when a chunk-layout
+    data file has exactly ONE row group whose uncompressed size exceeds `min_bytes` (default 64 MB).
+    Footer-only (no column decode) so it runs even under --quick. Gated on the `chunk` facet: the
+    point/peaks (per-peak) layout is chunked correctly by the writer and is not flagged."""
+    facet = params.get("facet", "chunk")
+    min_bytes = int(params.get("min_bytes", 64 * 1024 * 1024))
+    for fname in params.get("files", ["spectra_data", "chromatograms_data"]):
+        if not ar.has_file(fname):
+            continue
+        if not any(k == facet or k.startswith(facet + ".") for k in ar.fields(fname)):
+            continue                                  # only the chunk layout; point/peaks chunk fine
+        md = ar.pf(fname).metadata
+        if md.num_row_groups != 1:
+            continue                                  # already partitioned for random access
+        rg_bytes = md.row_group(0).total_byte_size
+        if rg_bytes > min_bytes:
+            rep.add(rule, "warning",
+                    f"{fname}: chunked data facet in a single {rg_bytes/1e6:.0f} MB Parquet row group "
+                    f"(> {min_bytes/1e6:.0f} MB threshold) — Parquet reads at row-group granularity, so "
+                    f"every random single-spectrum read decodes the whole group; bound row groups by "
+                    f"uncompressed size or point count so each spectrum touches one small group",
+                    {"file": fname}, recovery="normalize")
+
 PRIMITIVES = {
     "index_files_present": p_index_files_present, "columns_present": p_columns_present,
-    "data_kind_facet": p_data_kind_facet,
+    "data_kind_facet": p_data_kind_facet, "parquet_row_group_health": p_parquet_row_group_health,
     "footer_count_equals_rows": p_footer_count_equals_rows, "column_predicate": p_column_predicate,
     "dtype_role": p_dtype_role, "grouped_monotonic": p_grouped_monotonic, "foreign_key": p_foreign_key,
     "index_contiguous": p_index_contiguous, "cv_inflection": p_cv_inflection,

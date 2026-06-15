@@ -6,7 +6,7 @@
     "url": "https://github.com/HUPO-PSI/mzPeak-specification",
     "note": "Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0."
   },
-  "rule_primitive_catalog": "1.6",
+  "rule_primitive_catalog": "1.7",
   "extends": null,
   "severity_model": "hard-errors-nondemotable",
   "conformance_axes": ["well-formed", "schema", "numeric", "index", "cv", "integrity", "imaging"],
@@ -34,7 +34,8 @@
     {"role": "rules", "path": "rules/cv.rules.json",         "sha256": null},
     {"role": "rules", "path": "rules/numeric.rules.json",    "sha256": null},
     {"role": "rules", "path": "rules/metadata.rules.json",   "sha256": null},
-    {"role": "rules", "path": "rules/imaging.rules.json",    "sha256": null}
+    {"role": "rules", "path": "rules/imaging.rules.json",    "sha256": null},
+    {"role": "rules", "path": "rules/perf.rules.json",       "sha256": null}
   ],
   "notes": "sha256 fields are filled by a release `--seal` step (TODO). The engine reads artifacts by path; content-addressing is not yet enforced in v0.9."
 }
