@@ -1,0 +1,141 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mzPeak CV Mapping",
+  "description": "Describes all associations between a specific schema section and the appropriate CV terms.",
+  "type": "object",
+  "required": ["model_name", "model_uri", "model_version", "cv_reference_list", "cv_mapping_rule_list"],
+  "properties": {
+    "model_name": {
+      "type": "string",
+      "description": "Name of the PSI data exchange schema, e.g. mzData, GelML, MIF."
+    },
+    "model_uri": {
+      "type": "string",
+      "format": "uri",
+      "description": "URI of the data exchange schema."
+    },
+    "model_version": {
+      "type": "string",
+      "description": "Version number of the model supported by the CvMapping file."
+    },
+    "cv_reference_list": {
+      "type": "object",
+      "description": "Comprehensive list of CVs required by the schema or model.",
+      "required": ["cv_references"],
+      "properties": {
+        "cv_source_version": {
+          "type": "string",
+          "description": "Version of the CV source."
+        },
+        "cv_references": {
+          "type": "array",
+          "description": "One or more CV or ontology resource descriptions.",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/CvReference" }
+        }
+      }
+    },
+    "cv_mapping_rule_list": {
+      "type": "array",
+      "description": "Comprehensive list of associations between the model and CVs.",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/CvMappingRule" }
+    }
+  },
+  "definitions": {
+    "CvReference": {
+      "type": "object",
+      "description": "Description of a CV or ontology resource.",
+      "required": ["cv_identifier", "cv_name"],
+      "properties": {
+        "cv_identifier": {
+          "type": "string",
+          "description": "Short label or namespace abbreviation for the CV; referenced by cv_identifier_ref in CvTerm entries."
+        },
+        "cv_name": {
+          "type": "string",
+          "description": "Full descriptive name for the CV."
+        }
+      },
+      "additionalProperties": false
+    },
+    "CvMappingRule": {
+      "type": "object",
+      "description": "Single mapping rule between a specific element of the model and one or more CV terms.",
+      "required": ["id", "scope_path", "cv_element_path", "cv_terms_combination_logic", "requirement_level", "cv_terms"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier of the rule within this mapping file."
+        },
+        "name": {
+          "type": "string",
+          "description": "Human-readable name for this rule, used for error reporting."
+        },
+        "scope_path": {
+          "type": "string",
+          "description": "Element scope in the schema within which the non-repeatable (is_repeatable=false) condition applies."
+        },
+        "cv_element_path": {
+          "type": "string",
+          "description": "Path to the element within the scope that holds the CV annotation."
+        },
+        "cv_terms_combination_logic": {
+          "type": "string",
+          "enum": ["OR", "AND", "XOR"],
+          "description": "Boolean operator describing how multiple cv_terms entries for this rule are combined."
+        },
+        "requirement_level": {
+          "type": "string",
+          "enum": ["MUST", "SHOULD", "MAY"],
+          "description": "Whether the CV association is mandatory (MUST), recommended (SHOULD), or optional (MAY) when the element exists."
+        },
+        "cv_terms": {
+          "type": "array",
+          "description": "One or more CV terms allowed to annotate the element addressed by this rule.",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/CvTerm" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "CvTerm": {
+      "type": "object",
+      "description": "A single CV term (or subtree) permitted to annotate the element identified by the enclosing CvMappingRule.",
+      "required": ["cv_identifier_ref", "term_accession", "term_name", "use_term", "allow_children"],
+      "properties": {
+        "cv_identifier_ref": {
+          "type": "string",
+          "description": "Reference to a cv_identifier defined in cv_reference_list, identifying the source vocabulary."
+        },
+        "term_accession": {
+          "type": "string",
+          "description": "Accession number of the term in the source CV."
+        },
+        "term_name": {
+          "type": "string",
+          "description": "Human-readable name of the term in the source CV."
+        },
+        "use_term_name": {
+          "type": "boolean",
+          "description": "When true, validation checks term_name rather than term_accession.",
+          "default": false
+        },
+        "use_term": {
+          "type": "boolean",
+          "description": "When true, this term itself may be used to annotate data. When false, only its children (if allow_children is true) are valid."
+        },
+        "allow_children": {
+          "type": "boolean",
+          "description": "When true, child terms of this term are also permitted to annotate data."
+        },
+        "is_repeatable": {
+          "type": "boolean",
+          "description": "When true, this term may appear more than once on the same instance of the associated element.",
+          "default": true
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

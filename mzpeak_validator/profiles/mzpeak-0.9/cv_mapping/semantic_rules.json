@@ -1,0 +1,246 @@
+{
+  "$schema": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/cv_mapping_rule.json",
+  "model_name": "mzpeak_index.json",
+  "model_uri": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/mzpeak_index.json",
+  "model_version": "1.0.0",
+  "cv_reference_list": {
+    "cv_references": [
+      { "cv_name": "PSI-MS", "cv_identifier": "MS" },
+      { "cv_name": "Brenda",  "cv_identifier": "BTO" },
+      { "cv_name": "GO",      "cv_identifier": "GO" },
+      { "cv_name": "PATO",    "cv_identifier": "PATO" },
+      { "cv_name": "UO",      "cv_identifier": "UO" }
+    ]
+  },
+  "cv_mapping_rule_list": [
+
+    {
+      "id": "run_may",
+      "scope_path": "/metadata/run",
+      "cv_element_path": "/metadata/run/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000857", "term_name": "run attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "filecontent_must",
+      "scope_path": "/metadata/file_description",
+      "cv_element_path": "/metadata/file_description/contents[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000524", "term_name": "data file content",
+          "use_term": false, "use_term_name": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "filecontent_may",
+      "scope_path": "/metadata/file_description",
+      "cv_element_path": "/metadata/file_description/contents[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000525", "term_name": "spectrum representation",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "contact_must",
+      "scope_path": "/metadata/file_description/contacts[]",
+      "cv_element_path": "/metadata/file_description/contacts[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000586", "term_name": "contact name",
+          "use_term": true, "use_term_name": false, "allow_children": false, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000590", "term_name": "contact organization",
+          "use_term": true, "use_term_name": false, "allow_children": false, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "contact_may",
+      "scope_path": "/metadata/file_description/contacts[]/parameters[]",
+      "cv_element_path": "/metadata/file_description/contacts[]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000585", "term_name": "contact person attribute",
+          "use_term": false, "use_term_name": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "sample_may",
+      "scope_path": "/metadata/sample_list[]",
+      "cv_element_path": "/metadata/sample_list[]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS",   "term_accession": "MS:1000548",   "term_name": "sample attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "PATO", "term_accession": "PATO:0001241", "term_name": "quality of an object",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "GO",   "term_accession": "GO:0005575",   "term_name": "cellular_component",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "BTO",  "term_accession": "BTO:0000000",  "term_name": "brenda source tissue ontology",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "instrumentconfiguration_must",
+      "scope_path": "/metadata/instrument_configuration_list[]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000031", "term_name": "instrument model",
+          "use_term": true, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "instrumentconfiguration_may",
+      "scope_path": "/metadata/instrument_configuration_list[]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000496", "term_name": "instrument attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000597", "term_name": "ion optics type",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000487", "term_name": "ion optics attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "source_must",
+      "scope_path": "/metadata/instrument_configuration_list[]/components[component_type=ionsource]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/components[component_type=ionsource]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000008", "term_name": "ionization type",
+          "use_term": true, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "source_may",
+      "scope_path": "/metadata/instrument_configuration_list[]/components[component_type=ionsource]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/components[component_type=ionsource]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000007", "term_name": "inlet type",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000482", "term_name": "source attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000841", "term_name": "laser attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000842", "term_name": "laser type",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000832", "term_name": "MALDI matrix application",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000833", "term_name": "matrix application type",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "analyzer_must",
+      "scope_path": "/metadata/instrument_configuration_list[]/components[component_type=analyzer]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/components[component_type=analyzer]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000443", "term_name": "mass analyzer type",
+          "use_term": true, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "analyzer_may",
+      "scope_path": "/metadata/instrument_configuration_list[]/components[component_type=analyzer]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/components[component_type=analyzer]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000480", "term_name": "mass analyzer attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "detector_must",
+      "scope_path": "/metadata/instrument_configuration_list[]/components[component_type=detector]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/components[component_type=detector]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000026", "term_name": "detector type",
+          "use_term": true, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "detector_may",
+      "scope_path": "/metadata/instrument_configuration_list[]/components[component_type=detector]",
+      "cv_element_path": "/metadata/instrument_configuration_list[]/components[component_type=detector]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000027", "term_name": "detector acquisition mode",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000481", "term_name": "detector attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "software_must",
+      "scope_path": "/metadata/software_list[]",
+      "cv_element_path": "/metadata/software_list[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000531", "term_name": "software",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "processingmethod_must",
+      "scope_path": "/metadata/data_processing_method_list[]/methods[]",
+      "cv_element_path": "/metadata/data_processing_method_list[]/methods[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000452", "term_name": "data transformation",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "processingmethod_may",
+      "scope_path": "/metadata/data_processing_method_list[]/methods[]",
+      "cv_element_path": "/metadata/data_processing_method_list[]/methods[]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000630", "term_name": "data processing parameter",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    }
+
+  ]
+}

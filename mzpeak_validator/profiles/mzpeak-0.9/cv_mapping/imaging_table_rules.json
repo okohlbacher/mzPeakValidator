@@ -1,0 +1,27 @@
+{
+  "$schema": "./cv_mapping_rule.schema.json",
+  "model_name": "mzpeak_index.json (Imaging profile)",
+  "model_uri": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/mzpeak_index.json",
+  "model_version": "1.0.0",
+  "_note": "mzPeakValidator imaging-profile CV placement. Evaluated only when the archive is imaging (the engine rule sets require_imaging). The mzPeak analogue of the mzML MALDI object rules: an imaging scan MUST carry promoted pixel coordinates. position x/y are the IMS accessions inflected into the scan facet (e.g. scan.IMS_1000050_position_x).",
+  "cv_reference_list": {
+    "cv_references": [
+      { "cv_name": "Imaging MS", "cv_identifier": "IMS" }
+    ]
+  },
+  "cv_mapping_rule_list": [
+    {
+      "id": "imaging_scan_position_must",
+      "scope_path": "/spectrum/scan_list/scans[]",
+      "cv_element_path": "/spectrum/scan_list/scans[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "IMS", "term_accession": "IMS:1000050", "term_name": "position x",
+          "use_term": true, "allow_children": false, "is_repeatable": false },
+        { "cv_identifier_ref": "IMS", "term_accession": "IMS:1000051", "term_name": "position y",
+          "use_term": true, "allow_children": false, "is_repeatable": false }
+      ]
+    }
+  ]
+}

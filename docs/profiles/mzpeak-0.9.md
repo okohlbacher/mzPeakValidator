@@ -5,8 +5,8 @@
 
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`29e59b24f0ae`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.7` (the cross-language contract the engine implements)
-- **Rules:** 41 across 6 files
+- **Rule-primitive catalog:** `1.8` (the cross-language contract the engine implements)
+- **Rules:** 43 across 7 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -67,6 +67,10 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | rules |  |  | `rules/metadata.rules.json` |
 | rules |  |  | `rules/imaging.rules.json` |
 | rules |  |  | `rules/perf.rules.json` |
+| rules |  |  | `rules/semantic.rules.json` |
+| cv_mapping |  |  | `cv_mapping/table_rules.json` |
+| cv_mapping |  |  | `cv_mapping/imaging_table_rules.json` |
+| cv_mapping |  |  | `cv_mapping/semantic_rules.json` |
 
 CV snapshots are pinned OBO files (no live ontology lookup at validate time). `sha256` content-addressing is filled by a future `--seal` step.
 
@@ -188,9 +192,20 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 |---|---|---|---|---|
 | `data_row_group_not_monolithic` | `parquet_row_group_health` | warning | normalize | Advisory (perf, not conformance): a chunked spectra_data / chromatograms_data facet should not be stored in a single oversized Parquet row group. Parquet reads/decodes at row-group granularity, so a lone monolithic group means every random single-spectrum read decodes the whole group (the converter's chunk path can emit one group because its row-group cap is a row count, and one chunk-row is a whole-spectrum list). Writers should bound row groups by uncompressed size or point count (e.g. <= ~64 MB / ~2 M points). Warning-only; never fails an archive. |
 
+### `semantic.rules.json`
+
+**Purpose.** CV term-PLACEMENT conformance via the PSI CvMapping model (mzPeak port). Where cv.rules.json's cv_inflection checks that each accession is known and resolves, these rules check that the RIGHT terms appear in the RIGHT facet, with the required combination logic (AND/OR/XOR), child-term inheritance (allow_children) and cardinality (is_repeatable). See docs/cv-mapping-design.md.
+
+**Applies to.** the packed facets of spectra_metadata / chromatograms_metadata; imaging rule gated on is_imaging.
+
+| Rule id | Primitive | Severity | Recovery | What it checks |
+|---|---|---|---|---|
+| `cv_term_placement_tables` | `cv_mapping` | warning | none | CV term placement for the spectra_metadata / chromatograms_metadata facets, from the spec's cv_mapping/table_rules.json. Shipped at WARNING in Phase 1 (advisory, non-regressing): some spec MUSTs were written against mzML's element model and do not yet map cleanly to mzPeak's packed facets (e.g. spectrum type wants a child of MS:1000559; scan 'spectra combination' MS:1000570 is not represented). Promote to error per-rule once the spec/converter reconcile (one-line severity change). data_arrays[] and products[] scopes are intentionally unmapped (Phase 2). |
+| `cv_term_placement_imaging` | `cv_mapping` | warning | none | Imaging-profile CV placement (cv_mapping/imaging_table_rules.json), gated on is_imaging: an imaging scan facet MUST carry promoted pixel coordinates IMS:1000050 (position x) AND IMS:1000051 (position y). The mzPeak analogue of the mzML MALDI object rules; complements imaging_coordinates_1based (which checks the coordinate VALUES once the columns exist). |
+
 ## Primitive catalog (param contracts)
 
-The 19 primitives used by this profile and the parameters each accepts:
+The 20 primitives used by this profile and the parameters each accepts:
 
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
@@ -198,6 +213,7 @@ The 19 primitives used by this profile and the parameters each accepts:
 - **`count_sum_equals_rows`** — params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.
 - **`cv_inflection`** — params: file (logical table name). The engine injects the set of pinned CV accessions. For each column whose leaf name matches ${CV}_${digits}_... (and any _unit_${CV}_${digits} suffix): unknown CV code -> error; known code but accession absent from the pinned OBO -> warning. The literal prefix 'ARROW_' is skipped (it is not a CV).
 - **`cv_list_consistency`** — params: [files], [list]. The engine injects the profile's pinned CV versions. Gathers every CV code used in inflected columns (primary + unit accessions) across `files`; requires metadata.cv_list (at `list`) to declare each used code (spec: every referenced CV MUST be declared once in cv_list). Absent/empty cv_list, or a used-but-undeclared code -> error. Version policy: warn ONLY when a declared CV version is NEWER than the profile's pinned snapshot (the validator is behind -> update its bundled CVs); a same-or-older declared version does NOT warn (a plain version difference is not a problem).
+- **`cv_mapping`** — params: mapping_file (bundled CvMapping path), path_map (scope_path -> {file,facet}), [require_imaging]. The engine injects the parsed mapping (_mapping) and the OBO is_a graph (_cv_isa). For each CvMappingRule: MUST -> finding at this rule's severity, SHOULD -> warning, MAY -> skipped (Phase 1). A term is satisfied by an accession that equals it (use_term) or is its is_a descendant (allow_children); non-repeatable terms matched by >1 column are flagged. Unmapped scope_paths and absent files/facets are skipped.
 - **`data_kind_facet`** — params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.
 - **`dtype_role`** — params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].
 - **`footer_count_equals_rows`** — params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.

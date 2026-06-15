@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.7"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group)
+CATALOG_VERSION = "1.8"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -215,10 +215,12 @@ class Profile:
         if jdir.is_dir():
             for jf in sorted(jdir.glob("*.json")):
                 self.json_schemas[jf.stem] = json.loads(jf.read_text())
-        self.cv = self._load_cv()
+        self.cv = self._load_cv()                 # also sets self.cv_isa (is_a graph)
+        self.mappings = {art["path"]: json.loads((self.root / art["path"]).read_text())
+                         for art in self.manifest.get("artifacts", []) if art.get("role") == "cv_mapping"}
 
     def _load_cv(self):
-        cv = {}
+        cv, isa = {}, {}                          # isa: merged child_acc -> {parent_acc} for allow_children
         for art in self.manifest.get("artifacts", []):
             if art.get("role") != "cv":
                 continue
@@ -232,10 +234,13 @@ class Profile:
                         cur, obs = None, False
                     elif line.startswith("id:"):
                         cur = line[3:].strip()
+                    elif line.startswith("is_a:") and cur:
+                        isa.setdefault(cur, set()).add(line[5:].split("!")[0].strip().split()[0] if line[5:].strip() else "")
                     elif line.startswith("is_obsolete:") and "true" in line:
                         obs = True
             if cur and not obs: accs.add(cur)
             cv[art["id"]] = accs
+        self.cv_isa = isa
         return cv
 
 # --------------------------------------------------------------------------- report
@@ -251,7 +256,7 @@ class Report:
                             if a.get("role") == "cv"}
         self.archive = str(archive_path)
 
-    def add(self, rule, level, message, location=None, recovery=None):
+    def add(self, rule, level, message, location=None, recovery=None, fix=None):
         rid = rule.get("id")
         key = (rid, level, message)
         dup = self._seen.get(key)
@@ -263,7 +268,7 @@ class Report:
             return
         f = {"ruleId": rid, "primitive": rule.get("primitive"), "level": level, "message": message,
              "location": location or {}, "recovery": recovery if recovery is not None else rule.get("recovery", "none"),
-             "count": 1}
+             "fix": fix if fix is not None else rule.get("fix"), "count": 1}
         self.findings.append(f); self._seen[key] = f
         self._n[rid] = self._n.get(rid, 0) + 1
 
@@ -747,6 +752,85 @@ def p_tiff_magic(ar, rule, rep, params):
             rep.add(rule, sev, f"image member '{name}' declared {want_mt} but is not a TIFF "
                     f"(first 4 bytes {head!r}; expected b'II*\\x00' or b'MM\\x00*')", {"file": name})
 
+def _is_descendant(isa, acc, ancestor):
+    """True iff `acc` equals `ancestor` or is a transitive is_a child of it (walks the merged is_a graph)."""
+    if acc == ancestor:
+        return True
+    seen, stack = set(), [acc]
+    while stack:
+        x = stack.pop()
+        for par in isa.get(x, ()):
+            if par == ancestor:
+                return True
+            if par and par not in seen:
+                seen.add(par); stack.append(par)
+    return False
+
+def _term_matches(acc, term, isa):
+    """Does accession `acc` satisfy CvTerm `term`? use_term -> the term itself; allow_children -> a
+    proper is_a descendant. (use_term+allow_children -> self or descendant.)"""
+    ta = term.get("term_accession")
+    if acc == ta:
+        return bool(term.get("use_term"))
+    return bool(term.get("allow_children")) and _is_descendant(isa, acc, ta)
+
+def p_cv_mapping(ar, rule, rep, params):
+    """CV term-placement conformance (PSI CvMapping model, mzPeak port — see docs/cv-mapping-design.md).
+    Consumes a whole bundled CvMapping file (params._mapping = the spec's table_rules.json / imaging rules)
+    and, for each CvMappingRule, checks that the mzPeak facet addressed by scope_path carries the required
+    terms with the right combination logic (AND/OR/XOR), child inheritance (allow_children) and cardinality
+    (is_repeatable). Schema-only (reads inflected column names, no row decode) -> runs under --quick.
+    MUST emits at the engine rule's severity; SHOULD -> warning; MAY skipped (Phase 1). Self-gates on an
+    unmapped scope_path or an absent file/facet."""
+    mapping = params.get("_mapping")
+    if not mapping:
+        return
+    if params.get("require_imaging") and not _imaging(ar):
+        return
+    isa = params.get("_cv_isa", {})
+    pathmap = params.get("path_map", {})
+    sev_must = rule.get("severity", "warning")
+    LOGIC = {"AND": "all of", "OR": "one of", "XOR": "exactly one of"}
+    for cr in mapping.get("cv_mapping_rule_list", []):
+        level = cr.get("requirement_level")
+        if level == "MAY":                        # Phase 1: MAY rules enumerate permitted terms; not enforced
+            continue
+        loc = pathmap.get(cr.get("scope_path"))
+        if not loc:                               # scope_path has no mzPeak facet mapping -> skip
+            continue
+        f, facet = loc["file"], loc["facet"]
+        if not ar.has_file(f):
+            continue
+        fields = ar.fields(f)
+        if not any(k == facet or k.startswith(facet + ".") for k in fields):
+            continue                              # facet absent in this archive -> skip
+        present = set()
+        for path in fields:
+            if path.startswith(facet + "."):
+                for code, num in _cv_refs(path.split(".")[-1]):
+                    present.add(f"{code}:{num}")
+        emit = sev_must if level == "MUST" else "warning"
+        terms = cr.get("cv_terms", [])
+        logic = cr.get("cv_terms_combination_logic", "AND")
+        sat = {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in present)}
+        ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" else (len(sat) == 1)
+        if not ok:
+            want = ", ".join(f"{t.get('term_name')} ({t.get('term_accession')})" for t in terms)
+            miss = ", ".join(terms[i].get("term_name") for i in range(len(terms)) if i not in sat) or "(combination unmet)"
+            rep.add(rule, emit,
+                    f"{f} [{facet}]: CvMapping '{cr.get('id')}' ({level}/{logic}) requires {LOGIC.get(logic, logic)} "
+                    f"[{want}]; missing: {miss}",
+                    {"file": f, "facet": facet}, recovery="none", fix=rule.get("fix"))
+        for t in terms:                           # cardinality: a non-repeatable term must match <=1 column
+            if t.get("is_repeatable", True):
+                continue
+            matched = sorted(a for a in present if _term_matches(a, t, isa))
+            if len(matched) > 1:
+                rep.add(rule, emit,
+                        f"{f} [{facet}]: CvMapping '{cr.get('id')}': non-repeatable term {t.get('term_name')} "
+                        f"({t.get('term_accession')}) matched by {len(matched)} columns: {matched}",
+                        {"file": f, "facet": facet}, recovery="none", fix=rule.get("fix"))
+
 def p_parquet_row_group_health(ar, rule, rep, params):
     """Advisory (perf, NOT conformance): a chunked data facet stored in a single monolithic Parquet
     row group makes every random single-spectrum read decode the whole group. Warns when a chunk-layout
@@ -781,7 +865,7 @@ PRIMITIVES = {
     "count_sum_equals_rows": p_count_sum_equals_rows, "imaging_coordinates": p_imaging_coordinates,
     "member_exists": p_member_exists, "blob_hash": p_blob_hash, "tiff_magic": p_tiff_magic,
     "json_schema": p_json_schema, "grouped_count_equals": p_grouped_count_equals,
-    "cv_list_consistency": p_cv_list_consistency,
+    "cv_list_consistency": p_cv_list_consistency, "cv_mapping": p_cv_mapping,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
@@ -813,6 +897,9 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
                 params["_columns"] = prof.columns.get(params.get("file"))
             elif prim == "json_schema":
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
+            elif prim == "cv_mapping":
+                params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
+                params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim == "cv_list_consistency":
                 params["_cv_versions"] = {a["id"]: a.get("version") for a in prof.manifest.get("artifacts", [])
                                           if a.get("role") == "cv"}
@@ -850,6 +937,8 @@ def main():
         rec = f" [recover:{f['recovery']}]" if f.get("recovery") not in (None, "none") else ""
         cnt = f" (x{f['count']})" if f.get("count", 1) > 1 else ""
         lines.append(f"  {f['level'].upper():7} {f['ruleId'] or '-':28} {where}{rec}{cnt}\n           {f['message']}")
+        if f.get("fix"):
+            lines.append(f"           fix: {f['fix']}")
     print("\n".join(lines))
     if a.log:
         Path(a.log).write_text("\n".join(lines) + "\n")

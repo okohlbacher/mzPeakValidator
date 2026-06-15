@@ -1,0 +1,236 @@
+{
+  "$schema": "./cv_mapping_rule.json",
+  "model_name": "mzpeak_index.json",
+  "model_uri": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/mzpeak_index.json",
+  "model_version": "1.0.0",
+  "cv_reference_list": {
+    "cv_references": [
+      { "cv_name": "PSI-MS", "cv_identifier": "MS" }
+    ]
+  },
+  "cv_mapping_rule_list": [
+
+    {
+      "id": "spectrum_must",
+      "scope_path": "/spectrum",
+      "cv_element_path": "/spectrum/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000559", "term_name": "spectrum type",
+          "use_term": false, "use_term_name": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000525", "term_name": "spectrum representation",
+          "use_term": true, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "spectrum_may",
+      "scope_path": "/spectrum",
+      "cv_element_path": "/spectrum/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000499", "term_name": "spectrum attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000465", "term_name": "scan polarity",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "scan_must",
+      "scope_path": "/spectrum/scan_list",
+      "cv_element_path": "/spectrum/scan_list/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000570", "term_name": "spectra combination",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "scan_may",
+      "scope_path": "/spectrum/scan_list/scans[]",
+      "cv_element_path": "/spectrum/scan_list/scans[]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000503", "term_name": "scan attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000018", "term_name": "scan direction",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000019", "term_name": "scan law",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "scanwindow_must",
+      "scope_path": "/spectrum/scan_list/scans[]/scan_windows[]",
+      "cv_element_path": "/spectrum/scan_list/scans[]/scan_windows[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000500", "term_name": "scan window upper limit",
+          "use_term": true, "allow_children": false, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000501", "term_name": "scan window lower limit",
+          "use_term": true, "allow_children": false, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "scanwindow_may",
+      "scope_path": "/spectrum/scan_list/scans[]/scan_windows[]",
+      "cv_element_path": "/spectrum/scan_list/scans[]/scan_windows[]/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000549", "term_name": "selection window attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "precursor_selectedion_must",
+      "scope_path": "/spectrum/precursors[]/selected_ions[]",
+      "cv_element_path": "/spectrum/precursors[]/selected_ions[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000455", "term_name": "ion selection attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "precursor_activation_must",
+      "scope_path": "/spectrum/precursors[]/activation",
+      "cv_element_path": "/spectrum/precursors[]/activation/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000044", "term_name": "dissociation method",
+          "use_term": true, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "precursor_activation_may",
+      "scope_path": "/spectrum/precursors[]/activation",
+      "cv_element_path": "/spectrum/precursors[]/activation/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000510", "term_name": "precursor activation attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "precursor_isolationwindow_may",
+      "scope_path": "/spectrum/precursors[]/isolation_window",
+      "cv_element_path": "/spectrum/precursors[]/isolation_window/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000792", "term_name": "isolation window attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "product_isolationwindow_may",
+      "scope_path": "/spectrum/products[]/isolation_window",
+      "cv_element_path": "/spectrum/products[]/isolation_window/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000792", "term_name": "isolation window attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "spectrum_binarydataarray_must",
+      "scope_path": "/spectrum/data_arrays[]",
+      "cv_element_path": "/spectrum/data_arrays[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000513", "term_name": "binary data array",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000518", "term_name": "binary data type",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000572", "term_name": "binary data compression type",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "chromatogram_must",
+      "scope_path": "/chromatogram",
+      "cv_element_path": "/chromatogram/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000626", "term_name": "chromatogram type",
+          "use_term": false, "use_term_name": false, "allow_children": true, "is_repeatable": false }
+      ]
+    },
+
+    {
+      "id": "chromatogram_may",
+      "scope_path": "/chromatogram",
+      "cv_element_path": "/chromatogram/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "OR",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000808", "term_name": "chromatogram attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "chromatogram_precursor_isolationwindow_may",
+      "scope_path": "/chromatogram/precursor/isolation_window",
+      "cv_element_path": "/chromatogram/precursor/isolation_window/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000792", "term_name": "isolation window attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "chromatogram_product_isolationwindow_may",
+      "scope_path": "/chromatogram/product/isolation_window",
+      "cv_element_path": "/chromatogram/product/isolation_window/parameters[]/accession",
+      "requirement_level": "MAY",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000792", "term_name": "isolation window attribute",
+          "use_term": false, "allow_children": true, "is_repeatable": true }
+      ]
+    },
+
+    {
+      "id": "chromatogram_binarydataarray_must",
+      "scope_path": "/chromatogram/data_arrays[]",
+      "cv_element_path": "/chromatogram/data_arrays[]/parameters[]/accession",
+      "requirement_level": "MUST",
+      "cv_terms_combination_logic": "AND",
+      "cv_terms": [
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000513", "term_name": "binary data array",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000518", "term_name": "binary data type",
+          "use_term": false, "allow_children": true, "is_repeatable": false },
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000572", "term_name": "binary data compression type",
+          "use_term": false, "allow_children": true, "is_repeatable": false }
+      ]
+    }
+
+  ]
+}

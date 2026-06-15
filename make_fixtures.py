@@ -18,14 +18,18 @@ IN = [5., 4., 3., 2.] * 3
 TIFF_BYTES = b"II*\x00" + bytes(12)
 NOT_TIFF_BYTES = b"NOT-A-TIFF!!" + bytes(4)
 
-def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_footer=None):
+def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_footer=None, spectrum_type=True):
     cols = [pa.array(range(n), pa.uint64()), pa.array([1] * n, pa.uint8()),
             pa.array(["MS:1000127"] * n, pa.large_string()), pa.array(list(dp), pa.uint64())]
     names = ["index", "MS_1000511_ms_level", "MS_1000525_spectrum_representation", "MS_1003060_number_of_data_points"]
+    if spectrum_type:                                     # MS:1000294 (mass spectrum) is a child of MS:1000559 spectrum type
+        cols.append(pa.array([0] * n, pa.uint8())); names.append("MS_1000294_mass_spectrum")
     if bogus_cv:
         cols.append(pa.array([0] * n, pa.uint64())); names.append("XX_1234567_bogus")
     spectrum = pa.StructArray.from_arrays(cols, names=names)
-    scols, snames = [pa.array(range(n), pa.uint64())], ["source_index"]
+    # scan facet: MS:1000795 (no combination) is a child of MS:1000570 spectra combination
+    scols = [pa.array(range(n), pa.uint64()), pa.array([0] * n, pa.uint8())]
+    snames = ["source_index", "MS_1000795_no_combination"]
     if coords:                                            # promoted 1-based imaging coordinates on the scan facet
         scols += [pa.array(range(1, n + 1), pa.int64()), pa.array([1] * n, pa.int64())]
         snames += ["IMS_1000050_position_x", "IMS_1000051_position_y"]
@@ -67,12 +71,14 @@ def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
         return pa.array(list(vals) + [None] * pad, ty)
     spectrum = pa.StructArray.from_arrays(
         [pad_arr(range(n), pa.uint64()), pad_arr([1] * n, pa.uint8()),
-         pad_arr(["MS:1000127"] * n, pa.large_string()), pad_arr(dp, pa.uint64())],
+         pad_arr(["MS:1000127"] * n, pa.large_string()), pad_arr(dp, pa.uint64()), pad_arr([0] * n, pa.uint8())],
         names=["index", "MS_1000511_ms_level", "MS_1000525_spectrum_representation",
-               "MS_1003060_number_of_data_points"],
+               "MS_1003060_number_of_data_points", "MS_1000294_mass_spectrum"],
         mask=pa.array([False] * n + [True] * pad))     # struct-level null on the padded rows
-    scan = pa.StructArray.from_arrays([pad_arr(range(n), pa.uint64())], names=["source_index"],
-                                      mask=pa.array([False] * n + [True] * pad))
+    scan = pa.StructArray.from_arrays(
+        [pad_arr(range(n), pa.uint64()), pad_arr([0] * n, pa.uint8())],
+        names=["source_index", "MS_1000795_no_combination"],
+        mask=pa.array([False] * n + [True] * pad))
     # precursor.source_index must reference a real spectrum (FK to spectrum.index): cycle 0..n-1
     precursor = pa.StructArray.from_arrays([pa.array([i % n for i in range(total_rows)], pa.uint64())], names=["source_index"])
     return pa.table({"spectrum": spectrum, "scan": scan, "precursor": precursor}).replace_schema_metadata(
@@ -139,6 +145,11 @@ def build_all(out_root):
     # (A) packed parallel-facet layout: rows (7) > spectra (3); footer spectrum_count=3 must agree
     # with non-null spectrum.index, not the row count. Regression for the PASEF/TIMS false positive.
     case("pass", "packed_facets_multirow", _meta_packed(n=3, pad=4), _data(S, MZ, IN), "PASS")
+
+    # CV term placement (cv_mapping): spectrum facet without a child of MS:1000559 (spectrum type) violates
+    # the spec's spectrum_must rule -> warning (advisory in Phase 1; verdict stays PASS).
+    case("pass", "cv_placement_missing_spectrum_type", _meta(spectrum_type=False), _data(S, MZ, IN), "PASS",
+         warn="cv_term_placement_tables")
 
     # chunk layout validates clean (point-only rules self-skip); parquet_row_group_health is advisory
     # and must NOT false-fire on this tiny single-row-group file (its 64 MB threshold is far above).

@@ -1,0 +1,30 @@
+{
+  "about": {
+    "file": "semantic.rules.json",
+    "axis": "cv (term placement)",
+    "purpose": "CV term-PLACEMENT conformance via the PSI CvMapping model (mzPeak port). Where cv.rules.json's cv_inflection checks that each accession is known and resolves, these rules check that the RIGHT terms appear in the RIGHT facet, with the required combination logic (AND/OR/XOR), child-term inheritance (allow_children) and cardinality (is_repeatable). See docs/cv-mapping-design.md.",
+    "applies_to": "the packed facets of spectra_metadata / chromatograms_metadata; imaging rule gated on is_imaging.",
+    "how_to_amend": "The rule CONTENT lives in the bundled CvMapping files under cv_mapping/ (the spec's own table_rules.json, byte-for-byte). To change which terms are required where, edit those files (or the spec). The engine rules below only bind a mapping file to its mzPeak facet paths (params.path_map) and set the severity ceiling for MUST. 'about'/'doc'/'fix' are documentation; the engine reads id/primitive/severity/recovery/params/fix.",
+    "primitives": {
+      "cv_mapping": "params: mapping_file (bundled CvMapping path), path_map (scope_path -> {file,facet}), [require_imaging]. The engine injects the parsed mapping (_mapping) and the OBO is_a graph (_cv_isa). For each CvMappingRule: MUST -> finding at this rule's severity, SHOULD -> warning, MAY -> skipped (Phase 1). A term is satisfied by an accession that equals it (use_term) or is its is_a descendant (allow_children); non-repeatable terms matched by >1 column are flagged. Unmapped scope_paths and absent files/facets are skipped."
+    }
+  },
+  "rules": [
+    {"id": "cv_term_placement_tables", "primitive": "cv_mapping", "severity": "warning", "recovery": "none",
+     "doc": "CV term placement for the spectra_metadata / chromatograms_metadata facets, from the spec's cv_mapping/table_rules.json. Shipped at WARNING in Phase 1 (advisory, non-regressing): some spec MUSTs were written against mzML's element model and do not yet map cleanly to mzPeak's packed facets (e.g. spectrum type wants a child of MS:1000559; scan 'spectra combination' MS:1000570 is not represented). Promote to error per-rule once the spec/converter reconcile (one-line severity change). data_arrays[] and products[] scopes are intentionally unmapped (Phase 2).",
+     "fix": "Declare the required CV term in the named facet (as an inflected ${CV}_${ACC}_${name} column). For 'spectrum type', use a concrete child of MS:1000559 (e.g. MS:1000294 mass spectrum), not the abstract parent.",
+     "params": {"mapping_file": "cv_mapping/table_rules.json",
+                "path_map": {
+                  "/spectrum": {"file": "spectra_metadata", "facet": "spectrum"},
+                  "/spectrum/precursors[]/selected_ions[]": {"file": "spectra_metadata", "facet": "selected_ion"}
+                },
+                "_unmapped_phase2": ["/spectrum/scan_list*, /spectrum/precursors[]/activation, /spectrum/precursors[]/isolation_window, /spectrum/{products,data_arrays}[], /chromatogram* : mzPeak's packed facets do not surface these as inflected columns today (spectra combination, scan-window limits, activation, isolation, binary-data terms); mapping awaits spec/converter confirmation. Add a path_map entry to enable."]
+                }},
+
+    {"id": "cv_term_placement_imaging", "primitive": "cv_mapping", "severity": "warning", "recovery": "none",
+     "doc": "Imaging-profile CV placement (cv_mapping/imaging_table_rules.json), gated on is_imaging: an imaging scan facet MUST carry promoted pixel coordinates IMS:1000050 (position x) AND IMS:1000051 (position y). The mzPeak analogue of the mzML MALDI object rules; complements imaging_coordinates_1based (which checks the coordinate VALUES once the columns exist).",
+     "fix": "Promote the pixel coordinates into the scan facet as scan.IMS_1000050_position_x and scan.IMS_1000051_position_y.",
+     "params": {"mapping_file": "cv_mapping/imaging_table_rules.json", "require_imaging": true,
+                "path_map": {"/spectrum/scan_list/scans[]": {"file": "spectra_metadata", "facet": "scan"}}}}
+  ]
+}
