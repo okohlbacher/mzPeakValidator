@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.9', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install the package (with deps)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+      - name: Smoke test (fixtures + cross-language verdict gate)
+        run: python smoke_test.py
+      - name: Unit test — cv_mapping (CV term placement)
+        run: python test_cv_mapping.py
+      - name: Unit test — parquet_row_group_health
+        run: python test_row_group_health.py
+
+  build:
+    name: build & verify wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+      - name: Validate distribution metadata
+        run: twine check dist/*
+      - name: Verify the profile bundle is fully packaged
+        # Guards the packaging-completeness regression: every profile subdirectory
+        # (cv/, cv_mapping/, rules/, schema/, schema/json/, schema/tables/) MUST ship,
+        # or pip would install a validator that silently skips those rules.
+        run: |
+          python - <<'PY'
+          import glob, zipfile, sys
+          wheel = glob.glob("dist/*.whl")[0]
+          names = zipfile.ZipFile(wheel).namelist()
+          required = [
+              "profiles/mzpeak-0.9/profile.json",
+              "profiles/mzpeak-0.9/cv/psi-ms.obo.gz",
+              "profiles/mzpeak-0.9/cv_mapping/table_rules.json",
+              "profiles/mzpeak-0.9/rules/semantic.rules.json",
+              "profiles/mzpeak-0.9/schema/json/mzpeak_index.json",
+              "profiles/mzpeak-0.9/schema/tables/spectra_data.columns.json",
+          ]
+          missing = [r for r in required if not any(n.endswith(r) for n in names)]
+          if missing:
+              print("MISSING from wheel:", *missing, sep="\n  ")
+              sys.exit(1)
+          print(f"OK — profile bundle complete in {wheel} ({sum('profiles/' in n for n in names)} bundle files)")
+          PY
+      - name: Install the built wheel and smoke-run the console script
+        run: |
+          pip install dist/*.whl
+          python make_fixtures.py /tmp/fx
+          mzpeak-validate /tmp/fx/pass/valid
+      - name: Upload distributions
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/*
