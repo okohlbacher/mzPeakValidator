@@ -6,7 +6,7 @@ recovery / what it checks), the primitive param contracts, and the column schema
 
 | Profile | mzPeak spec | Catalog | Reference |
 |---|---|---|---|
-| `mzpeak-0.9` | 0.9 (commit `d1aaaf84`) | 1.1 | [mzpeak-0.9.md](mzpeak-0.9.md) |
+| `mzpeak-0.9` | 0.9 (commit `29e59b24`) | 1.8 | [mzpeak-0.9.md](mzpeak-0.9.md) |
 
 These pages are **generated** from each profile's own bundle, so they cannot drift from
 the rules the engine actually runs. Regenerate after changing a profile:

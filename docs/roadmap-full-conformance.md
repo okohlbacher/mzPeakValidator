@@ -2,15 +2,22 @@
 
 **Status:** in progress · **Date:** 2026-06-09 · **Basis:** the synthesized adversarial review (codex + vibe + internal red-team) against the current spec at `HUPO-PSI/mzPeak-specification`.
 
-> **Progress (2026-06-09): Phase 0, Phase 1, and Phase 5 (counts + FKs) DONE** — catalog `1.3 → 1.4`.
-> Re-pinned to the current spec, bundled its JSON Schemas, fixed the `metadata.version` path bug, added
-> the `json_schema` primitive (index + footer-blob + array-index validation) and `grouped_count_equals`
-> (per-spectrum counts) + the missing precursor/selected_ion FKs. Full 382-file corpus re-validated:
-> the new rules produced **zero false positives**; they surfaced 3 real systemic converter gaps
-> (missing `metadata.version`; `cv_list` entries missing `version`; `run` blob null `default_*_id`).
-> **Remaining:** Phase 2 (CV depth — cv_list cross-check, all-CURIE resolve, required-terms, placement),
-> Phase 3 (chunked/numpress + aux arrays), Phase 4 (chromatograms + wavelength), Phase 5 aggregates
-> (base-peak/TIC recompute), Phase 6 (container/page-index MUSTs), Phase 8 (auto-repair).
+> **Progress (2026-06-15): Phases 0, 1, 2 (CV depth + placement), and 5 (counts + FKs) DONE** — catalog `1.3 → 1.8`.
+> - **1.4** — re-pinned to the current spec, bundled its JSON Schemas, fixed the `metadata.version` path bug, added
+>   `json_schema` (index + footer-blob + array-index validation), `grouped_count_equals` (per-spectrum counts), and
+>   the missing precursor/selected_ion FKs.
+> - **1.5–1.6** — `cv_list_consistency` (cv_list completeness + CV-CURIE resolution; direction-aware version warning
+>   that fires only when a file declares a CV *newer* than the pinned snapshot). Bundled CVs refreshed to PSI-MS 4.1.254.
+> - **1.7** — `parquet_row_group_health` (advisory perf warning: a chunked data facet in one monolithic row group).
+> - **1.8** — `cv_mapping` (CV term-**placement** via the PSI CvMapping model — the spec's own `table_rules.json` bundled
+>   verbatim; MUST/SHOULD + AND/OR/XOR + `allow_children` + cardinality; Phase-1 maps `/spectrum` + selected-ions at
+>   warning severity) + finding-level `fix` tips. See [cv-mapping-design.md](cv-mapping-design.md). (The planned name `cv_placement` shipped as `cv_mapping`.)
+>
+> The 539-file corpus re-validates with **zero false positives** (537 PASS; the 2 FAIL are pre-existing converter
+> metadata gaps on newly-added/stale files).
+> **Remaining:** Phase 2b (wire the bundled `semantic_rules.json` JSON-metadata-param placements + data-array terms +
+> MAY inverse-check), Phase 3 (chunked/numpress + aux arrays), Phase 4 (chromatograms column schema + wavelength),
+> Phase 5 aggregates (base-peak/TIC recompute), Phase 6 (container/page-index MUSTs), Phase 8 (auto-repair).
 
 **Goal:** close the validator from "point-layout structural/numeric/FK + shallow CV resolvability" to **full mzPeak conformance** — every entity type, both signal layouts, the JSON index + footer metadata, and semantic CV validation.
 

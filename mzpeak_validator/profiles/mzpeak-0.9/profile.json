@@ -9,7 +9,7 @@
   "rule_primitive_catalog": "1.8",
   "extends": null,
   "severity_model": "hard-errors-nondemotable",
-  "conformance_axes": ["well-formed", "schema", "numeric", "index", "cv", "integrity", "imaging"],
+  "conformance_axes": ["well-formed", "schema", "numeric", "index", "cv", "cv-placement", "integrity", "imaging", "performance"],
   "artifacts": [
     {"role": "cv", "id": "MS",  "version": "4.1.254",    "path": "cv/psi-ms.obo.gz", "sha256": null},
     {"role": "cv", "id": "IMS", "version": "1.1.0",      "path": "cv/imagingMS.obo", "sha256": null},

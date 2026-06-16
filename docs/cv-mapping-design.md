@@ -42,17 +42,27 @@ CV accessions at a scope" = the accessions parsed out of the column names under 
 The evaluator therefore needs a **path → facet map**. Phase-1 mapping (in the engine rule's `path_map`
 param, so it is data-driven, not code):
 
-| spec `scope_path` | mzPeak (file, facet) | notes |
-|---|---|---|
-| `/spectrum` | `spectra_metadata`, `spectrum` | spectrum_must/may |
-| `/spectrum/scan_list`, `/spectrum/scan_list/scans[]`, `…/scan_windows[]` | `spectra_metadata`, `scan` | scan windows are promoted into the scan facet |
-| `/spectrum/precursors[]/selected_ions[]` | `spectra_metadata`, `selected_ion` | selectedion_must |
-| `/spectrum/precursors[]/activation`, `…/isolation_window` | `spectra_metadata`, `precursor` | |
-| `/chromatogram`, `/chromatogram/{precursor,product}/isolation_window` | `chromatograms_metadata`, `chromatogram`/`precursor` | gated on file presence |
-| `/spectrum/data_arrays[]`, `/chromatogram/data_arrays[]` | **unmapped** | binary-data terms live in the `spectrum_array_index` footer + Arrow dtype, not a facet — see §6 |
-| `/spectrum/products[]/isolation_window` | **unmapped** | no `product` facet in mzPeak today |
+The **`path_map` is the single source of truth** for what is active; only the scopes listed in it are
+evaluated. Phase-1 `path_map` (in `rules/semantic.rules.json`) wires exactly two scopes:
 
-Unmapped scopes and absent files/facets are **skipped** (self-gating) — never a false error.
+| spec `scope_path` | mzPeak (file, facet) | rules | status |
+|---|---|---|---|
+| `/spectrum` | `spectra_metadata`, `spectrum` | `spectrum_must`, `spectrum_may` | **active** |
+| `/spectrum/precursors[]/selected_ions[]` | `spectra_metadata`, `selected_ion` | `precursor_selectedion_must` | **active** |
+
+Every other spec scope is **unmapped** (skipped, never a false error) and falls into one of:
+
+| spec `scope_path` | skipped MUST rule(s) | why unmapped |
+|---|---|---|
+| `/spectrum/scan_list`, `…/scans[]`, `…/scan_windows[]` | `scan_must` (MS:1000570 spectra combination), `scanwindow_must` (MS:1000500/501) | not surfaced as `scan`-facet columns in mzPeak's packed model |
+| `/spectrum/precursors[]/activation`, `…/isolation_window` | `precursor_activation_must` (MS:1000044) | not surfaced as `precursor`-facet columns |
+| `/spectrum/data_arrays[]`, `/chromatogram/data_arrays[]` | `*_binarydataarray_must` (MS:1000513/518/572) | binary-data terms live in the `spectrum_array_index` footer + Arrow dtype, not a facet — §6 |
+| `/chromatogram`, `/chromatogram/{precursor,product}/isolation_window` | `chromatogram_must`, … | no `chromatograms_metadata` column schema yet (no chromatogram corpus file to calibrate against) |
+| `/spectrum/products[]/isolation_window` | `product_isolationwindow_may` | no `product` facet in mzPeak today |
+
+Absent files/facets are also skipped (self-gating). The `_unmapped_phase2` note in the engine rule mirrors
+this list; promoting a scope is a one-line `path_map` addition (plus, for scan/activation, a spec/converter
+decision on whether those terms become facet columns).
 
 `allow_children` needs the OBO `is_a` graph. The CV loader (`Profile._load_cv`) previously kept only the
 accession *set*; Phase 1 extends it to also build a merged `cv_isa` (child→parents) map, and

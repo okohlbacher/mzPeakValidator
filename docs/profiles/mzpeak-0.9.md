@@ -15,7 +15,7 @@ Validation is driven by this *profile* — a versioned bundle of JSON Schemas, p
 
 ## Conformance axes
 
-Conformance is reported along independent axes: `well-formed`, `schema`, `numeric`, `index`, `cv`, `integrity`, `imaging`.
+Conformance is reported along independent axes: `well-formed`, `schema`, `numeric`, `index`, `cv`, `cv-placement`, `integrity`, `imaging`, `performance`.
 
 ## Severity & recovery
 
