@@ -1,0 +1,41 @@
+{
+  "about": {
+    "file": "layout.rules.json",
+    "axis": "layout completeness (chunked/numpress signal + auxiliary arrays)",
+    "purpose": "Validate the CHUNKED signal layout (the dominant real-file layout: a `chunk` struct with ${axis}_chunk_start/end + a value list + numpress bytes) and the auxiliary-array bookkeeping. The point layout is covered by numeric.rules.json; these rules add the chunk dimension and the per-row auxiliary-array count.",
+    "applies_to": "spectra_data / chromatograms_data chunk facets; spectra_metadata / chromatograms_metadata auxiliary_arrays. All self-gate when absent.",
+    "how_to_amend": "Chunk axis differs by entity (mz for spectra, time for chromatograms); change start/end/required columns in params. 'about'/'doc' are documentation; the engine reads id/primitive/severity/recovery/params.",
+    "primitives": {
+      "chunk_columns": "params: file, start_column (the chunk-start column whose presence flags the chunked sublayout), required ([companion columns that MUST then exist]). Schema-only; runs under --quick.",
+      "chunk_bounds": "params: file, group (chunk.<entity>_index), start_column, end_column. For each group: start<=end per chunk, and consecutive chunks non-overlapping & ascending by start. DATA_SCAN.",
+      "aux_arrays": "params: file, count_column (number_of_auxiliary_arrays), list_column (auxiliary_arrays). Per row: declared count == actual list length (null treated as 0). DATA_SCAN."
+    }
+  },
+  "rules": [
+    {"id": "chunk_columns_spectra_data", "primitive": "chunk_columns", "severity": "error", "recovery": "none",
+     "doc": "A chunked spectra_data facet (declares chunk.mz_chunk_start) MUST carry its companion columns: mz_chunk_end, mz_chunk_values, chunk_encoding, intensity. Skips the scalar/point sublayout and absent files.",
+     "params": {"file": "spectra_data", "start_column": "chunk.mz_chunk_start",
+                "required": ["chunk.mz_chunk_end", "chunk.mz_chunk_values", "chunk.chunk_encoding", "chunk.intensity"]}},
+
+    {"id": "chunk_bounds_spectra_data", "primitive": "chunk_bounds", "severity": "warning", "recovery": "reorder_pair",
+     "doc": "Within each spectrum, m/z chunks have mz_chunk_start <= mz_chunk_end and are non-overlapping & ascending by start (the chunked analog of m/z monotonicity). The ascending/non-overlap part is a spec MUST; shipped at WARNING (advisory) in Phase 1 because real numpress-linear files carry an occasional converter-side mz_chunk_end=0 glitch — promote to error once that is calibrated/fixed.",
+     "params": {"file": "spectra_data", "group": "chunk.spectrum_index", "start_column": "chunk.mz_chunk_start", "end_column": "chunk.mz_chunk_end"}},
+
+    {"id": "chunk_columns_chromatograms_data", "primitive": "chunk_columns", "severity": "error", "recovery": "none",
+     "doc": "A chunked chromatograms_data facet (declares chunk.time_chunk_start) MUST carry time_chunk_end, time_chunk_values, chunk_encoding, intensity.",
+     "params": {"file": "chromatograms_data", "start_column": "chunk.time_chunk_start",
+                "required": ["chunk.time_chunk_end", "chunk.time_chunk_values", "chunk.chunk_encoding", "chunk.intensity"]}},
+
+    {"id": "chunk_bounds_chromatograms_data", "primitive": "chunk_bounds", "severity": "warning", "recovery": "reorder_pair",
+     "doc": "Within each chromatogram, time chunks have time_chunk_start <= time_chunk_end and are non-overlapping & ascending by start. Advisory (warning) in Phase 1, mirroring chunk_bounds_spectra_data.",
+     "params": {"file": "chromatograms_data", "group": "chunk.chromatogram_index", "start_column": "chunk.time_chunk_start", "end_column": "chunk.time_chunk_end"}},
+
+    {"id": "aux_arrays_spectra_metadata", "primitive": "aux_arrays", "severity": "error", "recovery": "rederive",
+     "doc": "Each spectrum's declared number_of_auxiliary_arrays equals the length of its auxiliary_arrays list. No-ops when the columns are absent.",
+     "params": {"file": "spectra_metadata", "count_column": "spectrum.number_of_auxiliary_arrays", "list_column": "spectrum.auxiliary_arrays"}},
+
+    {"id": "aux_arrays_chromatograms_metadata", "primitive": "aux_arrays", "severity": "error", "recovery": "rederive",
+     "doc": "Each chromatogram's declared number_of_auxiliary_arrays equals the length of its auxiliary_arrays list.",
+     "params": {"file": "chromatograms_metadata", "count_column": "chromatogram.number_of_auxiliary_arrays", "list_column": "chromatogram.auxiliary_arrays"}}
+  ]
+}

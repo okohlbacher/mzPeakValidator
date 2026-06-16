@@ -5,8 +5,8 @@
 
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`29e59b24f0ae`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.9` (the cross-language contract the engine implements)
-- **Rules:** 45 across 7 files
+- **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
+- **Rules:** 55 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -69,6 +69,8 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | rules |  |  | `rules/imaging.rules.json` |
 | rules |  |  | `rules/perf.rules.json` |
 | rules |  |  | `rules/semantic.rules.json` |
+| rules |  |  | `rules/layout.rules.json` |
+| rules |  |  | `rules/container.rules.json` |
 | cv_mapping |  |  | `cv_mapping/table_rules.json` |
 | cv_mapping |  |  | `cv_mapping/imaging_table_rules.json` |
 | cv_mapping |  |  | `cv_mapping/semantic_rules.json` |
@@ -104,6 +106,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 |---|---|---|---|---|
 | `index_files_present` | `index_files_present` | error | rebuild | Every file named in mzpeak_index.json 'files[]' exists and opens as Parquet, EXCEPT members declared as optical images in metadata.imaging.images[] (existence-checked only; bytes validated by the image primitives). recovery=rebuild: a lost/garbled index can be reconstructed from the present files. |
 | `data_kind_has_facet` | `data_kind_facet` | error | none | A file the index advertises as signal (data_kind 'data arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Catches an index that promises signal over a file holding something else. Amend: widen data_kinds/entity_types to gate more files, or add a facet name (e.g. a future layout) to facets[]. |
+| `data_kind_has_facet_chromatograms` | `data_kind_facet` | error | none | Same as data_kind_has_facet for the chromatogram entity: a file the index advertises as chromatogram 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without chromatograms. |
 | `columns_spectra_metadata` | `columns_present` | error | none | spectra_metadata has the required facets/columns and correct types per schema/tables/spectra_metadata.columns.json. To change WHICH columns are required or their expected type, edit that .columns.json file, not this rule. |
 | `columns_spectra_data` | `columns_present` | error | none | spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion keeps the source width, and both are valid pending HUPO-PSI #11 (binary array data types). To require a single width, narrow the type list in spectra_data.columns.json. |
 | `columns_spectra_peaks` | `columns_present` | error | none | spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types. |
@@ -141,6 +144,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `intensity_dtype_data` | `dtype_role` | error | none | spectra_data point.intensity is a floating type (float or double), never integer. Width-agnostic, matching the relaxed column schema (both 32- and 64-bit accepted). Edit allowed[] to broaden/narrow accepted types. |
 | `mz_dtype_data` | `dtype_role` | error | none | spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json. |
 | `point_fk_data` | `foreign_key` | error | none | Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable. |
+| `chrom_point_fk_data` | `foreign_key` | error | none | Every chromatograms_data chunk.chromatogram_index references an existing chromatograms_metadata chromatogram.index. The chromatogram analog of point_fk_data; no-ops on archives without chromatograms. |
 | `point_fk_peaks` | `foreign_key` | error | none | Same FK integrity from spectra_peaks back to spectrum.index. |
 | `scan_source_index_fk` | `foreign_key` | error | rebuild | scan.source_index resolves to a spectrum.index (both in spectra_metadata). allow_null=true: in the packed parallel-facet layout the scan facet is null on rows owned by another facet (e.g. precursor-only PASEF rows), so child nulls are expected and not flagged. recovery=rebuild: the scan<->spectrum map is derivable. |
 | `spectrum_index_contiguous` | `index_contiguous` | warning | none | spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices. |
@@ -163,6 +167,32 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `image_member_present` | `member_exists` | warning | none | Every optical image declared in metadata.imaging.images[].archive_path is actually present in the archive. WARNING, not error: optical images are auxiliary. Amend 'list'/'member' if image bookkeeping moves elsewhere in the index. |
 | `image_blob_hash` | `blob_hash` | warning | recompute | A present image member's bytes match its declared sha256 and size_bytes. recovery=recompute: a stale digest is fixable without touching the image. Change 'algo' if a different hash is recorded; null/absent hash fields are skipped per entry. |
 | `image_tiff_magic` | `tiff_magic` | warning | none | An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type. |
+
+### `container.rules.json`
+
+**Purpose.** Checks on the ZIP container and Parquet column layout that the spec mandates but that are below the table/metadata level: members stored uncompressed, and the entity-index / foreign-key column placed first in each facet.
+
+**Applies to.** the ZIP archive (zip_stored is skipped for directory archives) and spectra_metadata column order.
+
+| Rule id | Primitive | Severity | Recovery | What it checks |
+|---|---|---|---|---|
+| `members_stored` | `zip_stored` | error | none | mzPeak ZIP members MUST be stored uncompressed (the format relies on stored members for direct/remote range access; the engine also refuses high-inflation archives as a zip-bomb guard). Directory archives are skipped. |
+| `facet_key_column_first` | `column_order` | warning | none | The entity-index / foreign-key column should be the first column of its facet (spectrum.index, scan/precursor/selected_ion.source_index). Advisory: a conformant reader resolves columns by name/array-index, not position, so this never FAILs an archive. |
+
+### `layout.rules.json`
+
+**Purpose.** Validate the CHUNKED signal layout (the dominant real-file layout: a `chunk` struct with ${axis}_chunk_start/end + a value list + numpress bytes) and the auxiliary-array bookkeeping. The point layout is covered by numeric.rules.json; these rules add the chunk dimension and the per-row auxiliary-array count.
+
+**Applies to.** spectra_data / chromatograms_data chunk facets; spectra_metadata / chromatograms_metadata auxiliary_arrays. All self-gate when absent.
+
+| Rule id | Primitive | Severity | Recovery | What it checks |
+|---|---|---|---|---|
+| `chunk_columns_spectra_data` | `chunk_columns` | error | none | A chunked spectra_data facet (declares chunk.mz_chunk_start) MUST carry its companion columns: mz_chunk_end, mz_chunk_values, chunk_encoding, intensity. Skips the scalar/point sublayout and absent files. |
+| `chunk_bounds_spectra_data` | `chunk_bounds` | warning | reorder_pair | Within each spectrum, m/z chunks have mz_chunk_start <= mz_chunk_end and are non-overlapping & ascending by start (the chunked analog of m/z monotonicity). The ascending/non-overlap part is a spec MUST; shipped at WARNING (advisory) in Phase 1 because real numpress-linear files carry an occasional converter-side mz_chunk_end=0 glitch — promote to error once that is calibrated/fixed. |
+| `chunk_columns_chromatograms_data` | `chunk_columns` | error | none | A chunked chromatograms_data facet (declares chunk.time_chunk_start) MUST carry time_chunk_end, time_chunk_values, chunk_encoding, intensity. |
+| `chunk_bounds_chromatograms_data` | `chunk_bounds` | warning | reorder_pair | Within each chromatogram, time chunks have time_chunk_start <= time_chunk_end and are non-overlapping & ascending by start. Advisory (warning) in Phase 1, mirroring chunk_bounds_spectra_data. |
+| `aux_arrays_spectra_metadata` | `aux_arrays` | error | rederive | Each spectrum's declared number_of_auxiliary_arrays equals the length of its auxiliary_arrays list. No-ops when the columns are absent. |
+| `aux_arrays_chromatograms_metadata` | `aux_arrays` | error | rederive | Each chromatogram's declared number_of_auxiliary_arrays equals the length of its auxiliary_arrays list. |
 
 ### `metadata.rules.json`
 
@@ -208,9 +238,13 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 
 ## Primitive catalog (param contracts)
 
-The 21 primitives used by this profile and the parameters each accepts:
+The 26 primitives used by this profile and the parameters each accepts:
 
+- **`aux_arrays`** — params: file, count_column (number_of_auxiliary_arrays), list_column (auxiliary_arrays). Per row: declared count == actual list length (null treated as 0). DATA_SCAN.
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
+- **`chunk_bounds`** — params: file, group (chunk.<entity>_index), start_column, end_column. For each group: start<=end per chunk, and consecutive chunks non-overlapping & ascending by start. DATA_SCAN.
+- **`chunk_columns`** — params: file, start_column (the chunk-start column whose presence flags the chunked sublayout), required ([companion columns that MUST then exist]). Schema-only; runs under --quick.
+- **`column_order`** — params: file, expected ({facet -> required first column}). The entity-index / FK key MUST be the first column of its facet. Cheap (reads the Parquet schema only).
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
 - **`columns_present`** — params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float']); type mismatch -> error, recovery rederive.
 - **`count_sum_equals_rows`** — params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.
@@ -231,6 +265,7 @@ The 21 primitives used by this profile and the parameters each accepts:
 - **`member_exists`** — params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.
 - **`parquet_row_group_health`** — params: [files], [facet], [min_bytes]. Footer-only (no column decode; runs under --quick). For each `files` entry that carries the `facet` top-level struct (default 'chunk'): if the Parquet file has exactly ONE row group whose uncompressed total_byte_size exceeds min_bytes (default 67108864 = 64 MB) -> warning. A multi-row-group file, a small single-group file, or a non-chunk (point/peaks) layout does NOT warn.
 - **`tiff_magic`** — params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\0 little-endian or MM\0* big-endian).
+- **`zip_stored`** — no params. mzPeak ZIP members MUST be stored uncompressed (compress_type STORED); a directory archive is skipped. Cheap.
 
 ## Column schemas
 

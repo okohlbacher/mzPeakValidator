@@ -20,6 +20,10 @@
      "doc": "A file the index advertises as signal (data_kind 'data arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Catches an index that promises signal over a file holding something else. Amend: widen data_kinds/entity_types to gate more files, or add a facet name (e.g. a future layout) to facets[].",
      "params": {"data_kinds": ["data arrays", "peaks"], "facets": ["point", "chunk"], "entity_types": ["spectrum", "mass spectrum"]}},
 
+    {"id": "data_kind_has_facet_chromatograms", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",
+     "doc": "Same as data_kind_has_facet for the chromatogram entity: a file the index advertises as chromatogram 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without chromatograms.",
+     "params": {"data_kinds": ["data arrays"], "facets": ["point", "chunk"], "entity_types": ["chromatogram"]}},
+
     {"id": "columns_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
      "doc": "spectra_metadata has the required facets/columns and correct types per schema/tables/spectra_metadata.columns.json. To change WHICH columns are required or their expected type, edit that .columns.json file, not this rule.",
      "params": {"file": "spectra_metadata"}},

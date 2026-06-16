@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.9"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params)
+CATALOG_VERSION = "1.10"         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -932,6 +932,103 @@ def p_parquet_row_group_health(ar, rule, rep, params):
                     f"uncompressed size or point count so each spectrum touches one small group",
                     {"file": fname}, recovery="normalize")
 
+def p_chunk_columns(ar, rule, rep, params):
+    """Structural completeness of a chunked signal facet (Phase 3): when a data file declares the
+    chunked sublayout (the `start_column`, e.g. chunk.mz_chunk_start / chunk.time_chunk_start is
+    present), it MUST also carry its companion columns (chunk end, the value list, encoding, intensity).
+    Schema-only -> runs under --quick. Self-gates: a file without `start_column` (point/scalar layout
+    or absent file) is skipped."""
+    f, start = params["file"], params["start_column"]
+    if not has(ar, f, start):
+        return
+    sev = rule.get("severity", "error")
+    for col in params.get("required", []):
+        if not has(ar, f, col):
+            rep.add(rule, sev, f"{f}: chunked layout declares '{start}' but is missing companion column '{col}'",
+                    {"file": f, "column": col})
+
+def p_chunk_bounds(ar, rule, rep, params):
+    """Chunk ordering invariant (Phase 3, the chunked analog of grouped_monotonic): within each group
+    (chunk.spectrum_index / chunk.chromatogram_index) every chunk has start <= end, and consecutive
+    chunks are non-overlapping and ascending by start. Gates on `start_column`; DATA_SCAN."""
+    f, grp, sc, ec = params["file"], params["group"], params["start_column"], params["end_column"]
+    if not (has(ar, f, grp) and has(ar, f, sc) and has(ar, f, ec)):
+        return
+    sev = rule.get("severity", "error")
+    g, s, e = ar.column(f, grp), ar.column(f, sc), ar.column(f, ec)
+    gv = (pc.fill_null(g.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+          if pa.types.is_integer(g.type) else g.to_numpy(zero_copy_only=False))
+    sv, ev = s.to_numpy(zero_copy_only=False), e.to_numpy(zero_copy_only=False)
+    snull = pc.is_null(s).to_numpy(zero_copy_only=False)
+    if len(gv) == 0:
+        return
+    badvb = (~snull) & ~pc.is_null(e).to_numpy(zero_copy_only=False) & (sv > ev)
+    if badvb.any():
+        i = int(np.argmax(badvb))
+        rep.add(rule, sev, f"{f}: chunk start > end at row {i} ({sv[i]:g} > {ev[i]:g}) in {grp.split('.')[-1]}={gv[i]}",
+                {"file": f, "row": i})
+    order = np.argsort(gv, kind="stable")                 # group rows together, preserving physical order within a group
+    go, so, eo, no = gv[order], sv[order], ev[order], snull[order]
+    overlap = (go[1:] == go[:-1]) & ~no[1:] & ~no[:-1] & (so[1:] < eo[:-1])
+    if overlap.any():
+        j = int(np.argmax(overlap))
+        rep.add(rule, sev, f"{f}: overlapping/non-ascending chunks in {grp.split('.')[-1]}={go[j]}: "
+                f"chunk start {so[j+1]:g} < previous end {eo[j]:g}", {"file": f, "row": int(order[j + 1])},
+                recovery="reorder_pair")
+
+def p_aux_arrays(ar, rule, rep, params):
+    """Auxiliary-array count integrity (Phase 3): each row's declared number_of_auxiliary_arrays equals
+    the actual length of its auxiliary_arrays list (null count/list treated as 0). DATA_SCAN."""
+    f, cc, lc = params["file"], params["count_column"], params["list_column"]
+    if not (has(ar, f, cc) and has(ar, f, lc)):
+        return
+    sev = rule.get("severity", "error")
+    cnt, lst = ar.column(f, cc), ar.column(f, lc)
+    cntv = cnt.to_numpy(zero_copy_only=False)
+    cnull = pc.is_null(cnt).to_numpy(zero_copy_only=False)
+    lens = pc.list_value_length(lst).to_numpy(zero_copy_only=False)
+    lnull = pc.is_null(lst).to_numpy(zero_copy_only=False)
+    bad, first = 0, None
+    for i in range(len(cntv)):
+        declared = 0 if cnull[i] else int(cntv[i])
+        actual = 0 if lnull[i] else int(lens[i])
+        if declared != actual:
+            bad += 1
+            if first is None:
+                first = (i, declared, actual)
+    if bad:
+        i, d, a = first
+        rep.add(rule, sev, f"{f}: number_of_auxiliary_arrays mismatch in {bad} row(s); row {i} declares "
+                f"{d} but auxiliary_arrays has {a}", {"file": f, "row": i}, recovery="rederive")
+
+def p_zip_stored(ar, rule, rep, params):
+    """Container MUST (Phase 6): mzPeak ZIP members MUST be stored uncompressed (compress_type STORED).
+    Directory archives have no ZIP and are skipped."""
+    if ar._tmp is None or not ar.path.is_file():
+        return
+    sev = rule.get("severity", "error")
+    try:
+        with zipfile.ZipFile(ar.path) as z:
+            bad = [i.filename for i in z.infolist() if i.compress_type != zipfile.ZIP_STORED]
+    except Exception:
+        return
+    if bad:
+        rep.add(rule, sev, f"{len(bad)} ZIP member(s) are compressed; mzPeak members MUST be stored "
+                f"(uncompressed): {bad[:5]}", {"file": bad[0]})
+
+def p_column_order(ar, rule, rep, params):
+    """Container layout (Phase 6): the entity-index / foreign-key column MUST be the first column of its
+    facet (params.expected maps facet -> required first column). Advisory by default."""
+    f = params["file"]
+    if not ar.has_file(f):
+        return
+    sev = rule.get("severity", "warning")
+    expected = params.get("expected", {})
+    for top in ar.pf(f).schema_arrow:
+        if pa.types.is_struct(top.type) and top.name in expected and len(top.type) and top.type[0].name != expected[top.name]:
+            rep.add(rule, sev, f"{f}: facet '{top.name}' first column is '{top.type[0].name}', "
+                    f"expected the key '{expected[top.name]}' first", {"file": f, "facet": top.name})
+
 PRIMITIVES = {
     "index_files_present": p_index_files_present, "columns_present": p_columns_present,
     "data_kind_facet": p_data_kind_facet, "parquet_row_group_health": p_parquet_row_group_health,
@@ -943,10 +1040,13 @@ PRIMITIVES = {
     "json_schema": p_json_schema, "grouped_count_equals": p_grouped_count_equals,
     "cv_list_consistency": p_cv_list_consistency, "cv_mapping": p_cv_mapping,
     "cv_mapping_json": p_cv_mapping_json,
+    "chunk_columns": p_chunk_columns, "chunk_bounds": p_chunk_bounds, "aux_arrays": p_aux_arrays,
+    "zip_stored": p_zip_stored, "column_order": p_column_order,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
-             "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates"}
+             "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates",
+             "chunk_bounds", "aux_arrays"}
 
 # -------------------------------------------------------------------------------- run
 def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):

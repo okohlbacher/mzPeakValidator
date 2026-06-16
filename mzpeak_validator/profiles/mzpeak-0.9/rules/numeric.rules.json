@@ -58,6 +58,10 @@
      "doc": "Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable.",
      "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
 
+    {"id": "chrom_point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "Every chromatograms_data chunk.chromatogram_index references an existing chromatograms_metadata chromatogram.index. The chromatogram analog of point_fk_data; no-ops on archives without chromatograms.",
+     "params": {"file": "chromatograms_data", "column": "chunk.chromatogram_index", "ref_file": "chromatograms_metadata", "ref_column": "chromatogram.index", "allow_null": true}},
+
     {"id": "point_fk_peaks", "primitive": "foreign_key", "severity": "error", "recovery": "none",
      "doc": "Same FK integrity from spectra_peaks back to spectrum.index.",
      "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},

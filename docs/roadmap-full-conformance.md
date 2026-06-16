@@ -2,7 +2,7 @@
 
 **Status:** in progress · **Date:** 2026-06-09 · **Basis:** the synthesized adversarial review (codex + vibe + internal red-team) against the current spec at `HUPO-PSI/mzPeak-specification`.
 
-> **Progress (2026-06-16): Phases 0, 1, 2 (CV depth + placement, facet + JSON-metadata), and 5 (counts + FKs) DONE** — catalog `1.3 → 1.9`.
+> **Progress (2026-06-16): Phases 0, 1, 2 (CV placement, facet + JSON-metadata), 3 (chunk layout), 4 (chromatograms), 5 (counts + FKs), and 6 (container MUSTs) DONE** — catalog `1.3 → 1.10`.
 > - **1.4** — re-pinned to the current spec, bundled its JSON Schemas, fixed the `metadata.version` path bug, added
 >   `json_schema` (index + footer-blob + array-index validation), `grouped_count_equals` (per-spectrum counts), and
 >   the missing precursor/selected_ion FKs.
@@ -17,11 +17,20 @@
 >   via a JSON path walker; advisory. Plus a `chromatograms_metadata` column schema + `columns_chromatograms_metadata`
 >   structural rule (closes a blind spot 3 rules already assumed; verified 0 errors across all corpus chromatogram files).
 >
-> The corpus re-validates with **zero false positives** (the only FAILs are pre-existing converter metadata gaps on
-> newly-added/stale files; the new placement axes are advisory/warning-only).
-> **Remaining:** Phase 2c (data-array terms via an `spectrum_array_index` resolver; MAY inverse-check; promote
-> calibrated MUSTs to error), Phase 3 (chunked/numpress + aux arrays), Phase 4 (wavelength spectra), Phase 5
-> aggregates (base-peak/TIC recompute), Phase 6 (container/page-index MUSTs), Phase 8 (auto-repair).
+> - **1.10** — Phase 3 chunk layout: `chunk_columns` (companion-column completeness of a chunked facet),
+>   `chunk_bounds` (per-group `start<=end` + non-overlapping ascending chunks — advisory, since real numpress files
+>   carry an occasional converter `mz_chunk_end=0` glitch, found in 47 corpus files), `aux_arrays` (count vs list
+>   length). Phase 6 container MUSTs: `zip_stored` (members uncompressed — 0 violations), `column_order` (key column
+>   first — advisory). Phase 4 chromatograms: column schema + `data_kind_has_facet_chromatograms` + `chrom_point_fk_data`.
+>
+> Full 539-file corpus re-validated at max sensitivity after each phase: **537 PASS / 2 FAIL**, the 2 FAIL unchanged
+> (pre-existing converter metadata gaps). Every new error-level rule adds **zero** errors; the advisory rules
+> (`chunk_bounds`, placement, row-group) surface real converter-side issues as warnings.
+> **Remaining:** Phase 2c (data-array CV terms via an `spectrum_array_index` resolver; MAY inverse-check; promote
+> calibrated MUSTs — `chunk_bounds`, the placement axes — to error once the converter glitches are fixed),
+> Phase 3b (`parquet_page_index` once pyarrow exposes the offset index reliably), Phase 4b (wavelength/EMR spectra —
+> no corpus file yet), Phase 5b aggregate recompute (base-peak/TIC — needs numpress decode + tolerances),
+> Phase 8 (auto-repair). The straightforward, corpus-safe coverage is now largely landed.
 
 **Goal:** close the validator from "point-layout structural/numeric/FK + shallow CV resolvability" to **full mzPeak conformance** — every entity type, both signal layouts, the JSON index + footer metadata, and semantic CV validation.
 

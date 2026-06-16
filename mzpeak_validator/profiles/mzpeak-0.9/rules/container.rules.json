@@ -1,0 +1,23 @@
+{
+  "about": {
+    "file": "container.rules.json",
+    "axis": "container & Parquet-level layout (well-formed)",
+    "purpose": "Checks on the ZIP container and Parquet column layout that the spec mandates but that are below the table/metadata level: members stored uncompressed, and the entity-index / foreign-key column placed first in each facet.",
+    "applies_to": "the ZIP archive (zip_stored is skipped for directory archives) and spectra_metadata column order.",
+    "how_to_amend": "column_order's expected facet->first-column map is in params.expected. 'about'/'doc' are documentation; the engine reads id/primitive/severity/recovery/params.",
+    "primitives": {
+      "zip_stored": "no params. mzPeak ZIP members MUST be stored uncompressed (compress_type STORED); a directory archive is skipped. Cheap.",
+      "column_order": "params: file, expected ({facet -> required first column}). The entity-index / FK key MUST be the first column of its facet. Cheap (reads the Parquet schema only)."
+    }
+  },
+  "rules": [
+    {"id": "members_stored", "primitive": "zip_stored", "severity": "error", "recovery": "none",
+     "doc": "mzPeak ZIP members MUST be stored uncompressed (the format relies on stored members for direct/remote range access; the engine also refuses high-inflation archives as a zip-bomb guard). Directory archives are skipped.",
+     "params": {}},
+
+    {"id": "facet_key_column_first", "primitive": "column_order", "severity": "warning", "recovery": "none",
+     "doc": "The entity-index / foreign-key column should be the first column of its facet (spectrum.index, scan/precursor/selected_ion.source_index). Advisory: a conformant reader resolves columns by name/array-index, not position, so this never FAILs an archive.",
+     "params": {"file": "spectra_metadata",
+                "expected": {"spectrum": "index", "scan": "source_index", "precursor": "source_index", "selected_ion": "source_index"}}}
+  ]
+}

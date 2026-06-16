@@ -40,6 +40,8 @@ jobs:
         run: python test_cv_mapping_json.py
       - name: Unit test — parquet_row_group_health
         run: python test_row_group_health.py
+      - name: Unit test — layout primitives (chunk/aux/zip/order)
+        run: python test_layout.py
 
   build:
     name: build & verify wheel
