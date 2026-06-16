@@ -100,10 +100,15 @@ mapping (notably scan combination and the data-array terms).
 
 ## 6. Known limitations / phasing
 
-- **Phase 2 — `semantic_rules.json` (JSON-metadata params).** The spec also governs CV terms in the index
-  metadata blobs (`file_description.contents[]`, `run.parameters[]`, instrument-config components, software,
-  data_processing). These need a JSON-pointer resolver over the index + footer blobs rather than facet column
-  names. The file is bundled now (provenance); wiring is Phase 2.
+- **✅ DONE (catalog 1.9) — `semantic_rules.json` (JSON-metadata params).** Wired via the `cv_mapping_json`
+  primitive: a JSON path walker (`_json_walk`, supporting `key` / `key[]` / `key[field=value]` / leaf) resolves
+  each rule's `scope_path` to its instance object(s) in `mzpeak_index.json` `metadata` (`file_description.contents[]`,
+  `instrument_configuration_list[].components[component_type=…]`, `software_list[]`, `data_processing_method_list[].methods[]`),
+  gathers the accessions at `cv_element_path` per instance, and runs the shared `_cvmap_eval`. Advisory (warning) in
+  Phase 1 like the facet rules — several spec MUSTs use `use_term` on an abstract parent (e.g. ionization type
+  MS:1000008, mass analyzer type MS:1000443) that real files satisfy with a concrete child, so those surface as
+  advisory findings. Engine rule: `cv_term_placement_metadata`. An absent scope (e.g. no `contacts`) yields no
+  instances and is silently conformant.
 - **Phase 2 — data-array terms.** `*_binarydataarray_must` (binary data array / type / compression) map to the
   `spectrum_array_index` footer (`array_type`) + Arrow dtype + `chunk_encoding`, not to facet columns. Needs an
   array-index resolver.

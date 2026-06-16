@@ -2,7 +2,7 @@
 
 **Status:** in progress · **Date:** 2026-06-09 · **Basis:** the synthesized adversarial review (codex + vibe + internal red-team) against the current spec at `HUPO-PSI/mzPeak-specification`.
 
-> **Progress (2026-06-15): Phases 0, 1, 2 (CV depth + placement), and 5 (counts + FKs) DONE** — catalog `1.3 → 1.8`.
+> **Progress (2026-06-16): Phases 0, 1, 2 (CV depth + placement, facet + JSON-metadata), and 5 (counts + FKs) DONE** — catalog `1.3 → 1.9`.
 > - **1.4** — re-pinned to the current spec, bundled its JSON Schemas, fixed the `metadata.version` path bug, added
 >   `json_schema` (index + footer-blob + array-index validation), `grouped_count_equals` (per-spectrum counts), and
 >   the missing precursor/selected_ion FKs.
@@ -12,12 +12,16 @@
 > - **1.8** — `cv_mapping` (CV term-**placement** via the PSI CvMapping model — the spec's own `table_rules.json` bundled
 >   verbatim; MUST/SHOULD + AND/OR/XOR + `allow_children` + cardinality; Phase-1 maps `/spectrum` + selected-ions at
 >   warning severity) + finding-level `fix` tips. See [cv-mapping-design.md](cv-mapping-design.md). (The planned name `cv_placement` shipped as `cv_mapping`.)
+> - **1.9** — `cv_mapping_json` wires the bundled `semantic_rules.json`: CV placement over the JSON index metadata
+>   params (file_description.contents, instrument-config ionization/analyzer/detector type, software, data_processing),
+>   via a JSON path walker; advisory. Plus a `chromatograms_metadata` column schema + `columns_chromatograms_metadata`
+>   structural rule (closes a blind spot 3 rules already assumed; verified 0 errors across all corpus chromatogram files).
 >
-> The 539-file corpus re-validates with **zero false positives** (537 PASS; the 2 FAIL are pre-existing converter
-> metadata gaps on newly-added/stale files).
-> **Remaining:** Phase 2b (wire the bundled `semantic_rules.json` JSON-metadata-param placements + data-array terms +
-> MAY inverse-check), Phase 3 (chunked/numpress + aux arrays), Phase 4 (chromatograms column schema + wavelength),
-> Phase 5 aggregates (base-peak/TIC recompute), Phase 6 (container/page-index MUSTs), Phase 8 (auto-repair).
+> The corpus re-validates with **zero false positives** (the only FAILs are pre-existing converter metadata gaps on
+> newly-added/stale files; the new placement axes are advisory/warning-only).
+> **Remaining:** Phase 2c (data-array terms via an `spectrum_array_index` resolver; MAY inverse-check; promote
+> calibrated MUSTs to error), Phase 3 (chunked/numpress + aux arrays), Phase 4 (wavelength spectra), Phase 5
+> aggregates (base-peak/TIC recompute), Phase 6 (container/page-index MUSTs), Phase 8 (auto-repair).
 
 **Goal:** close the validator from "point-layout structural/numeric/FK + shallow CV resolvability" to **full mzPeak conformance** — every entity type, both signal layouts, the JSON index + footer metadata, and semantic CV validation.
 

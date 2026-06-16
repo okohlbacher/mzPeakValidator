@@ -29,7 +29,7 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-CATALOG_VERSION = "1.8"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips
+CATALOG_VERSION = "1.9"          # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params)
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 
@@ -789,14 +789,38 @@ def _term_matches(acc, term, isa):
         return bool(term.get("use_term"))
     return bool(term.get("allow_children")) and _is_descendant(isa, acc, ta)
 
+_CVMAP_LOGIC = {"AND": "all of", "OR": "one of", "XOR": "exactly one of"}
+
+def _cvmap_eval(cr, present, isa, rule, rep, emit, where, loc):
+    """Apply one CvMappingRule to the set of accessions `present` at scope `where`: combination logic
+    (AND/OR/XOR) over its cv_terms, plus per-term cardinality (is_repeatable). Shared by the facet
+    resolver (p_cv_mapping) and the JSON-metadata resolver (p_cv_mapping_json)."""
+    terms = cr.get("cv_terms", [])
+    logic = cr.get("cv_terms_combination_logic", "AND")
+    sat = {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in present)}
+    ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" else (len(sat) == 1)
+    if not ok:
+        want = ", ".join(f"{t.get('term_name')} ({t.get('term_accession')})" for t in terms)
+        miss = ", ".join(terms[i].get("term_name") for i in range(len(terms)) if i not in sat) or "(combination unmet)"
+        rep.add(rule, emit, f"{where}: CvMapping '{cr.get('id')}' ({cr.get('requirement_level')}/{logic}) "
+                f"requires {_CVMAP_LOGIC.get(logic, logic)} [{want}]; missing: {miss}",
+                loc, recovery="none", fix=rule.get("fix"))
+    for t in terms:                               # non-repeatable term must match at most one entry in scope
+        if t.get("is_repeatable", True):
+            continue
+        matched = sorted(a for a in present if _term_matches(a, t, isa))
+        if len(matched) > 1:
+            rep.add(rule, emit, f"{where}: CvMapping '{cr.get('id')}': non-repeatable term {t.get('term_name')} "
+                    f"({t.get('term_accession')}) matched by {len(matched)} entries: {matched}",
+                    loc, recovery="none", fix=rule.get("fix"))
+
 def p_cv_mapping(ar, rule, rep, params):
-    """CV term-placement conformance (PSI CvMapping model, mzPeak port — see docs/cv-mapping-design.md).
-    Consumes a whole bundled CvMapping file (params._mapping = the spec's table_rules.json / imaging rules)
-    and, for each CvMappingRule, checks that the mzPeak facet addressed by scope_path carries the required
-    terms with the right combination logic (AND/OR/XOR), child inheritance (allow_children) and cardinality
-    (is_repeatable). Schema-only (reads inflected column names, no row decode) -> runs under --quick.
-    MUST emits at the engine rule's severity; SHOULD -> warning; MAY skipped (Phase 1). Self-gates on an
-    unmapped scope_path or an absent file/facet."""
+    """CV term-placement over the packed Parquet facets (PSI CvMapping model, mzPeak port — see
+    docs/cv-mapping-design.md). Consumes a bundled CvMapping file (params._mapping = the spec's
+    table_rules.json / imaging rules); for each rule, maps scope_path -> an mzPeak facet (params.path_map),
+    gathers the accessions inflected into that facet's column names, and checks them with _cvmap_eval.
+    Schema-only (no row decode) -> runs under --quick. MUST emits at this rule's severity; SHOULD ->
+    warning; MAY skipped (Phase 1). Self-gates on an unmapped scope_path or an absent file/facet."""
     mapping = params.get("_mapping")
     if not mapping:
         return
@@ -805,10 +829,8 @@ def p_cv_mapping(ar, rule, rep, params):
     isa = params.get("_cv_isa", {})
     pathmap = params.get("path_map", {})
     sev_must = rule.get("severity", "warning")
-    LOGIC = {"AND": "all of", "OR": "one of", "XOR": "exactly one of"}
     for cr in mapping.get("cv_mapping_rule_list", []):
-        level = cr.get("requirement_level")
-        if level == "MAY":                        # Phase 1: MAY rules enumerate permitted terms; not enforced
+        if cr.get("requirement_level") == "MAY":  # Phase 1: MAY rules enumerate permitted terms; not enforced
             continue
         loc = pathmap.get(cr.get("scope_path"))
         if not loc:                               # scope_path has no mzPeak facet mapping -> skip
@@ -819,32 +841,71 @@ def p_cv_mapping(ar, rule, rep, params):
         fields = ar.fields(f)
         if not any(k == facet or k.startswith(facet + ".") for k in fields):
             continue                              # facet absent in this archive -> skip
-        present = set()
-        for path in fields:
-            if path.startswith(facet + "."):
-                for code, num in _cv_refs(path.split(".")[-1]):
-                    present.add(f"{code}:{num}")
-        emit = sev_must if level == "MUST" else "warning"
-        terms = cr.get("cv_terms", [])
-        logic = cr.get("cv_terms_combination_logic", "AND")
-        sat = {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in present)}
-        ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" else (len(sat) == 1)
-        if not ok:
-            want = ", ".join(f"{t.get('term_name')} ({t.get('term_accession')})" for t in terms)
-            miss = ", ".join(terms[i].get("term_name") for i in range(len(terms)) if i not in sat) or "(combination unmet)"
-            rep.add(rule, emit,
-                    f"{f} [{facet}]: CvMapping '{cr.get('id')}' ({level}/{logic}) requires {LOGIC.get(logic, logic)} "
-                    f"[{want}]; missing: {miss}",
-                    {"file": f, "facet": facet}, recovery="none", fix=rule.get("fix"))
-        for t in terms:                           # cardinality: a non-repeatable term must match <=1 column
-            if t.get("is_repeatable", True):
+        present = {f"{code}:{num}" for path in fields if path.startswith(facet + ".")
+                   for code, num in _cv_refs(path.split(".")[-1])}
+        emit = sev_must if cr.get("requirement_level") == "MUST" else "warning"
+        _cvmap_eval(cr, present, isa, rule, rep, emit, f"{f} [{facet}]", {"file": f, "facet": facet})
+
+def _json_seg(seg):
+    """Parse one path segment: 'components[component_type=ionsource]' -> ('components', True, ('component_type','ionsource'));
+    'parameters[]' -> ('parameters', True, None); 'accession' -> ('accession', False, None)."""
+    if "[" not in seg:
+        return seg, False, None
+    name, _, rest = seg.partition("[")
+    inner = rest.rstrip("]")
+    if "=" in inner:
+        k, _, v = inner.partition("=")
+        return name, True, (k.strip(), v.strip())
+    return name, True, None
+
+def _json_segs(path):
+    return [s for s in path.strip("/").split("/") if s]
+
+def _json_walk(node, segs):
+    """Yield every value reached from `node` along `segs`, following list iteration (`key[]`) and
+    `key[field=value]` filters. A leaf scalar segment (e.g. 'accession') yields the field's value."""
+    if not segs:
+        yield node
+        return
+    if not isinstance(node, dict):
+        return
+    name, listy, filt = _json_seg(segs[0])
+    child = node.get(name)
+    if child is None:
+        return
+    if isinstance(child, list) or listy:
+        for x in (child if isinstance(child, list) else [child]):
+            if filt and not (isinstance(x, dict) and str(x.get(filt[0])) == filt[1]):
                 continue
-            matched = sorted(a for a in present if _term_matches(a, t, isa))
-            if len(matched) > 1:
-                rep.add(rule, emit,
-                        f"{f} [{facet}]: CvMapping '{cr.get('id')}': non-repeatable term {t.get('term_name')} "
-                        f"({t.get('term_accession')}) matched by {len(matched)} columns: {matched}",
-                        {"file": f, "facet": facet}, recovery="none", fix=rule.get("fix"))
+            yield from _json_walk(x, segs[1:])
+    else:
+        yield from _json_walk(child, segs[1:])
+
+def p_cv_mapping_json(ar, rule, rep, params):
+    """CV term-placement over the JSON index metadata — the spec's semantic_rules.json (file_description
+    contents, instrument-config components incl. ionization/analyzer/detector type, software,
+    data_processing). For each CvMappingRule, resolves scope_path to its instance object(s) in
+    mzpeak_index.json `metadata`, gathers the accessions at cv_element_path within each instance, and
+    applies _cvmap_eval per instance. Reads only the already-loaded index (cheap; runs under --quick).
+    Phase 1: advisory (MUST -> this rule's severity, SHOULD -> warning, MAY skipped). An absent
+    scope (e.g. no contacts) yields no instances and is silently conformant."""
+    mapping = params.get("_mapping")
+    if not mapping or not isinstance(ar.index, dict):
+        return
+    isa = params.get("_cv_isa", {})
+    sev_must = rule.get("severity", "warning")
+    for cr in mapping.get("cv_mapping_rule_list", []):
+        level = cr.get("requirement_level")
+        if level == "MAY":
+            continue
+        scope, elem = cr.get("scope_path", ""), cr.get("cv_element_path", "")
+        if not elem.startswith(scope):            # element must live inside the scope; skip malformed
+            continue
+        tail = _json_segs(elem[len(scope):])      # accession path relative to a scope instance
+        emit = sev_must if level == "MUST" else "warning"
+        for inst in _json_walk(ar.index, _json_segs(scope)):
+            present = {v for v in _json_walk(inst, tail) if isinstance(v, str)}
+            _cvmap_eval(cr, present, isa, rule, rep, emit, f"metadata {scope}", {"path": scope})
 
 def p_parquet_row_group_health(ar, rule, rep, params):
     """Advisory (perf, NOT conformance): a chunked data facet stored in a single monolithic Parquet
@@ -881,6 +942,7 @@ PRIMITIVES = {
     "member_exists": p_member_exists, "blob_hash": p_blob_hash, "tiff_magic": p_tiff_magic,
     "json_schema": p_json_schema, "grouped_count_equals": p_grouped_count_equals,
     "cv_list_consistency": p_cv_list_consistency, "cv_mapping": p_cv_mapping,
+    "cv_mapping_json": p_cv_mapping_json,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
@@ -912,7 +974,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
                 params["_columns"] = prof.columns.get(params.get("file"))
             elif prim == "json_schema":
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
-            elif prim == "cv_mapping":
+            elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim == "cv_list_consistency":

@@ -34,8 +34,10 @@ jobs:
           pip install -e .
       - name: Smoke test (fixtures + cross-language verdict gate)
         run: python smoke_test.py
-      - name: Unit test — cv_mapping (CV term placement)
+      - name: Unit test — cv_mapping (facet CV term placement)
         run: python test_cv_mapping.py
+      - name: Unit test — cv_mapping_json (metadata CV term placement)
+        run: python test_cv_mapping_json.py
       - name: Unit test — parquet_row_group_health
         run: python test_row_group_health.py
 

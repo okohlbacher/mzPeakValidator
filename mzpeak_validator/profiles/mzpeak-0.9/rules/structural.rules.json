@@ -30,6 +30,10 @@
 
     {"id": "columns_spectra_peaks", "primitive": "columns_present", "severity": "error", "recovery": "none",
      "doc": "spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types.",
-     "params": {"file": "spectra_peaks"}}
+     "params": {"file": "spectra_peaks"}},
+
+    {"id": "columns_chromatograms_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "chromatograms_metadata carries the required structural facets/columns (chromatogram.index/id keys; FK keys on precursor/selected_ion/product when present), per schema/tables/chromatograms_metadata.columns.json. CV-inflected columns are validated separately by cv_inflection. No-ops on archives without a chromatograms_metadata table.",
+     "params": {"file": "chromatograms_metadata"}}
   ]
 }

@@ -1,0 +1,37 @@
+{
+  "file": "chromatograms_metadata",
+  "note": "Packed parallel-facet layout (same shape as spectra_metadata): top-level struct columns 'chromatogram' / 'precursor' / 'selected_ion' (+ optional 'product' for SRM/MRM, per spec). CV-inflected columns (${CV}_${ACC}_${name}) are validated by cv_inflection, NOT declared here; only the stable structural keys are. 'chromatogram.index' is uint in the real corpus (spec doc says 'integer'); matches spectra_metadata.spectrum.index. Verified universal (required:true) across all 539 corpus archives carrying chromatograms_metadata.parquet.",
+  "facets": {
+    "chromatogram": {
+      "required": true,
+      "columns": {
+        "index": {"type": "uint", "required": true},
+        "id": {"type": "string", "required": true},
+        "data_processing_ref": {"type": "string", "required": false},
+        "MS_1003060_number_of_data_points": {"type": "uint", "required": false},
+        "number_of_auxiliary_arrays": {"type": "uint", "required": false}
+      }
+    },
+    "precursor": {
+      "required": false,
+      "columns": {
+        "source_index": {"type": "uint", "required": true},
+        "precursor_index": {"type": "uint", "required": false}
+      }
+    },
+    "selected_ion": {
+      "required": false,
+      "columns": {
+        "source_index": {"type": "uint", "required": true},
+        "precursor_index": {"type": "uint", "required": false}
+      }
+    },
+    "product": {
+      "required": false,
+      "columns": {
+        "source_index": {"type": "uint", "required": true},
+        "product_index": {"type": "uint", "required": false}
+      }
+    }
+  }
+}

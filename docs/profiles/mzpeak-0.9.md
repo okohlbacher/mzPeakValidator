@@ -5,8 +5,8 @@
 
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`29e59b24f0ae`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.8` (the cross-language contract the engine implements)
-- **Rules:** 43 across 7 files
+- **Rule-primitive catalog:** `1.9` (the cross-language contract the engine implements)
+- **Rules:** 45 across 7 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -61,6 +61,7 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | columns | spectra_metadata |  | `schema/tables/spectra_metadata.columns.json` |
 | columns | spectra_data |  | `schema/tables/spectra_data.columns.json` |
 | columns | spectra_peaks |  | `schema/tables/spectra_peaks.columns.json` |
+| columns | chromatograms_metadata |  | `schema/tables/chromatograms_metadata.columns.json` |
 | rules |  |  | `rules/structural.rules.json` |
 | rules |  |  | `rules/cv.rules.json` |
 | rules |  |  | `rules/numeric.rules.json` |
@@ -106,6 +107,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `columns_spectra_metadata` | `columns_present` | error | none | spectra_metadata has the required facets/columns and correct types per schema/tables/spectra_metadata.columns.json. To change WHICH columns are required or their expected type, edit that .columns.json file, not this rule. |
 | `columns_spectra_data` | `columns_present` | error | none | spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion keeps the source width, and both are valid pending HUPO-PSI #11 (binary array data types). To require a single width, narrow the type list in spectra_data.columns.json. |
 | `columns_spectra_peaks` | `columns_present` | error | none | spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types. |
+| `columns_chromatograms_metadata` | `columns_present` | error | none | chromatograms_metadata carries the required structural facets/columns (chromatogram.index/id keys; FK keys on precursor/selected_ion/product when present), per schema/tables/chromatograms_metadata.columns.json. CV-inflected columns are validated separately by cv_inflection. No-ops on archives without a chromatograms_metadata table. |
 
 ### `cv.rules.json`
 
@@ -201,11 +203,12 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
 | `cv_term_placement_tables` | `cv_mapping` | warning | none | CV term placement for the spectra_metadata / chromatograms_metadata facets, from the spec's cv_mapping/table_rules.json. Shipped at WARNING in Phase 1 (advisory, non-regressing): some spec MUSTs were written against mzML's element model and do not yet map cleanly to mzPeak's packed facets (e.g. spectrum type wants a child of MS:1000559; scan 'spectra combination' MS:1000570 is not represented). Promote to error per-rule once the spec/converter reconcile (one-line severity change). data_arrays[] and products[] scopes are intentionally unmapped (Phase 2). |
+| `cv_term_placement_metadata` | `cv_mapping_json` | warning | none | CV term placement over the JSON index metadata parameters — file_description.contents[], instrument_configuration_list[].components[] (ionization/analyzer/detector type), software_list[], data_processing_method_list[].methods[] — from the spec's cv_mapping/semantic_rules.json (bundled verbatim). The cv_mapping_json primitive resolves each rule's scope_path to its instance objects in mzpeak_index.json `metadata` and checks the accessions at cv_element_path. Advisory (warning) in Phase 1, like the table rules: several spec MUSTs use `use_term` on an abstract parent (e.g. ionization type MS:1000008, mass analyzer type MS:1000443) that real files satisfy with a concrete child, and empty parameter lists fail their MUST — these surface as advisory findings. MAY rules are not enforced. |
 | `cv_term_placement_imaging` | `cv_mapping` | warning | none | Imaging-profile CV placement (cv_mapping/imaging_table_rules.json), gated on is_imaging: an imaging scan facet MUST carry promoted pixel coordinates IMS:1000050 (position x) AND IMS:1000051 (position y). The mzPeak analogue of the mzML MALDI object rules; complements imaging_coordinates_1based (which checks the coordinate VALUES once the columns exist). |
 
 ## Primitive catalog (param contracts)
 
-The 20 primitives used by this profile and the parameters each accepts:
+The 21 primitives used by this profile and the parameters each accepts:
 
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
@@ -214,6 +217,7 @@ The 20 primitives used by this profile and the parameters each accepts:
 - **`cv_inflection`** — params: file (logical table name). The engine injects the set of pinned CV accessions. For each column whose leaf name matches ${CV}_${digits}_... (and any _unit_${CV}_${digits} suffix): unknown CV code -> error; known code but accession absent from the pinned OBO -> warning. The literal prefix 'ARROW_' is skipped (it is not a CV).
 - **`cv_list_consistency`** — params: [files], [list]. The engine injects the profile's pinned CV versions. Gathers every CV code used in inflected columns (primary + unit accessions) across `files`; requires metadata.cv_list (at `list`) to declare each used code (spec: every referenced CV MUST be declared once in cv_list). Absent/empty cv_list, or a used-but-undeclared code -> error. Version policy: warn ONLY when a declared CV version is NEWER than the profile's pinned snapshot (the validator is behind -> update its bundled CVs); a same-or-older declared version does NOT warn (a plain version difference is not a problem).
 - **`cv_mapping`** — params: mapping_file (bundled CvMapping path), path_map (scope_path -> {file,facet}), [require_imaging]. The engine injects the parsed mapping (_mapping) and the OBO is_a graph (_cv_isa). For each CvMappingRule: MUST -> finding at this rule's severity, SHOULD -> warning, MAY -> skipped (Phase 1). A term is satisfied by an accession that equals it (use_term) or is its is_a descendant (allow_children); non-repeatable terms matched by >1 column are flagged. Unmapped scope_paths and absent files/facets are skipped.
+- **`cv_mapping_json`** — params: mapping_file (bundled CvMapping path). Same evaluation as cv_mapping but resolves scope_path/cv_element_path over the JSON index metadata (mzpeak_index.json `metadata`) instead of facet columns: a path walker follows key / key[] / key[field=value] segments to each scope INSTANCE, then gathers the accessions at the relative cv_element_path within it. A MUST is checked per scope instance; an absent scope (no instances) is vacuously conformant. No path_map (the spec paths are used directly).
 - **`data_kind_facet`** — params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.
 - **`dtype_role`** — params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].
 - **`footer_count_equals_rows`** — params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.
@@ -231,6 +235,24 @@ The 20 primitives used by this profile and the parameters each accepts:
 ## Column schemas
 
 Required facets/columns and expected logical types per table (`columns_present` enforces these; edit these files to change what is required).
+
+### `chromatograms_metadata`
+
+_Packed parallel-facet layout (same shape as spectra_metadata): top-level struct columns 'chromatogram' / 'precursor' / 'selected_ion' (+ optional 'product' for SRM/MRM, per spec). CV-inflected columns (${CV}_${ACC}_${name}) are validated by cv_inflection, NOT declared here; only the stable structural keys are. 'chromatogram.index' is uint in the real corpus (spec doc says 'integer'); matches spectra_metadata.spectrum.index. Verified universal (required:true) across all 539 corpus archives carrying chromatograms_metadata.parquet._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+| `chromatogram` | yes | `index` | `uint` | yes |
+| `chromatogram` | yes | `id` | `string` | yes |
+| `chromatogram` | yes | `data_processing_ref` | `string` | no |
+| `chromatogram` | yes | `MS_1003060_number_of_data_points` | `uint` | no |
+| `chromatogram` | yes | `number_of_auxiliary_arrays` | `uint` | no |
+| `precursor` | no | `source_index` | `uint` | yes |
+| `precursor` | no | `precursor_index` | `uint` | no |
+| `selected_ion` | no | `source_index` | `uint` | yes |
+| `selected_ion` | no | `precursor_index` | `uint` | no |
+| `product` | no | `source_index` | `uint` | yes |
+| `product` | no | `product_index` | `uint` | no |
 
 ### `spectra_data`
 

@@ -6,7 +6,8 @@
     "applies_to": "the packed facets of spectra_metadata / chromatograms_metadata; imaging rule gated on is_imaging.",
     "how_to_amend": "The rule CONTENT lives in the bundled CvMapping files under cv_mapping/ (the spec's own table_rules.json, byte-for-byte). To change which terms are required where, edit those files (or the spec). The engine rules below only bind a mapping file to its mzPeak facet paths (params.path_map) and set the severity ceiling for MUST. 'about'/'doc'/'fix' are documentation; the engine reads id/primitive/severity/recovery/params/fix.",
     "primitives": {
-      "cv_mapping": "params: mapping_file (bundled CvMapping path), path_map (scope_path -> {file,facet}), [require_imaging]. The engine injects the parsed mapping (_mapping) and the OBO is_a graph (_cv_isa). For each CvMappingRule: MUST -> finding at this rule's severity, SHOULD -> warning, MAY -> skipped (Phase 1). A term is satisfied by an accession that equals it (use_term) or is its is_a descendant (allow_children); non-repeatable terms matched by >1 column are flagged. Unmapped scope_paths and absent files/facets are skipped."
+      "cv_mapping": "params: mapping_file (bundled CvMapping path), path_map (scope_path -> {file,facet}), [require_imaging]. The engine injects the parsed mapping (_mapping) and the OBO is_a graph (_cv_isa). For each CvMappingRule: MUST -> finding at this rule's severity, SHOULD -> warning, MAY -> skipped (Phase 1). A term is satisfied by an accession that equals it (use_term) or is its is_a descendant (allow_children); non-repeatable terms matched by >1 column are flagged. Unmapped scope_paths and absent files/facets are skipped.",
+      "cv_mapping_json": "params: mapping_file (bundled CvMapping path). Same evaluation as cv_mapping but resolves scope_path/cv_element_path over the JSON index metadata (mzpeak_index.json `metadata`) instead of facet columns: a path walker follows key / key[] / key[field=value] segments to each scope INSTANCE, then gathers the accessions at the relative cv_element_path within it. A MUST is checked per scope instance; an absent scope (no instances) is vacuously conformant. No path_map (the spec paths are used directly)."
     }
   },
   "rules": [
@@ -20,6 +21,11 @@
                 },
                 "_unmapped_phase2": ["/spectrum/scan_list*, /spectrum/precursors[]/activation, /spectrum/precursors[]/isolation_window, /spectrum/{products,data_arrays}[], /chromatogram* : mzPeak's packed facets do not surface these as inflected columns today (spectra combination, scan-window limits, activation, isolation, binary-data terms); mapping awaits spec/converter confirmation. Add a path_map entry to enable."]
                 }},
+
+    {"id": "cv_term_placement_metadata", "primitive": "cv_mapping_json", "severity": "warning", "recovery": "none",
+     "doc": "CV term placement over the JSON index metadata parameters — file_description.contents[], instrument_configuration_list[].components[] (ionization/analyzer/detector type), software_list[], data_processing_method_list[].methods[] — from the spec's cv_mapping/semantic_rules.json (bundled verbatim). The cv_mapping_json primitive resolves each rule's scope_path to its instance objects in mzpeak_index.json `metadata` and checks the accessions at cv_element_path. Advisory (warning) in Phase 1, like the table rules: several spec MUSTs use `use_term` on an abstract parent (e.g. ionization type MS:1000008, mass analyzer type MS:1000443) that real files satisfy with a concrete child, and empty parameter lists fail their MUST — these surface as advisory findings. MAY rules are not enforced.",
+     "fix": "Declare the required CV term in the named metadata block; where the rule uses the abstract parent term directly (use_term), add that exact term, not only a child.",
+     "params": {"mapping_file": "cv_mapping/semantic_rules.json"}},
 
     {"id": "cv_term_placement_imaging", "primitive": "cv_mapping", "severity": "warning", "recovery": "none",
      "doc": "Imaging-profile CV placement (cv_mapping/imaging_table_rules.json), gated on is_imaging: an imaging scan facet MUST carry promoted pixel coordinates IMS:1000050 (position x) AND IMS:1000051 (position y). The mzPeak analogue of the mzML MALDI object rules; complements imaging_coordinates_1based (which checks the coordinate VALUES once the columns exist).",
