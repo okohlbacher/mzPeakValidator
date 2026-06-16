@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mzpeak-validator"
-version = "0.1.0"
+version = "0.9.1"
 description = "Language-independent-by-design validator for the HUPO-PSI mzPeak mass-spectrometry format."
 readme = "README.md"
 requires-python = ">=3.7"
@@ -30,13 +30,17 @@ Repository = "https://github.com/okohlbacher/mzPeakValidator"
 [tool.setuptools]
 packages = ["mzpeak_validator"]
 
-# Ship the versioned profile bundle (CV OBO snapshots, JSON schemas, declarative rules)
-# as package data so it resolves after install via Path(__file__).parent / "profiles".
+# Ship the versioned profile bundle (CV OBO snapshots, JSON schemas, declarative
+# rules, and bundled PSI CvMapping files) as package data so it resolves after
+# install via Path(__file__).parent / "profiles". Every subdirectory of a profile
+# must be listed — a missing glob silently ships a validator that skips those rules.
 [tool.setuptools.package-data]
 mzpeak_validator = [
   "profiles/*/profile.json",
-  "profiles/*/cv/*",
-  "profiles/*/schema/*.json",
-  "profiles/*/schema/tables/*.json",
-  "profiles/*/rules/*.json",
+  "profiles/*/cv/*",                 # pinned OBO snapshots (*.obo, *.obo.gz)
+  "profiles/*/cv_mapping/*.json",    # bundled PSI CvMapping rule sets (semantic validation)
+  "profiles/*/rules/*.json",         # declarative rule instances
+  "profiles/*/schema/*.json",        # top-level index schema
+  "profiles/*/schema/tables/*.json", # per-table column specs
+  "profiles/*/schema/json/*.json",   # draft-07 schemas for json_schema rules
 ]
