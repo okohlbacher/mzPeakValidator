@@ -39,23 +39,27 @@ class Archive:
     def __init__(self, path):
         self.path = Path(path)
         self._tmp = None
-        if self.path.is_dir():
-            self.root = self.path
-        else:
-            self._tmp = tempfile.mkdtemp(prefix="mzpeak_val_")
-            with zipfile.ZipFile(self.path) as z:
-                comp = sum(i.compress_size for i in z.infolist())
-                uncomp = sum(i.file_size for i in z.infolist())
-                # mzPeak MUST store members uncompressed (ratio ~1); a large, highly-inflating
-                # archive is a zip bomb, not a conformant file — refuse before extracting.
-                if uncomp > 100_000_000 and comp and uncomp / comp > 50:
-                    raise ValueError(f"refusing to extract: {uncomp} bytes uncompressed vs {comp} "
-                                     f"compressed ({uncomp / comp:.0f}x) — mzPeak members must be stored uncompressed")
-                z.extractall(self._tmp)
-            self.root = Path(self._tmp)
-        idx = self.root / "mzpeak_index.json"
-        self.index = json.loads(idx.read_text()) if idx.exists() else None
         self._pf, self._col = {}, {}
+        try:                                          # any failure after mkdtemp must not leak the tempdir
+            if self.path.is_dir():
+                self.root = self.path
+            else:
+                self._tmp = tempfile.mkdtemp(prefix="mzpeak_val_")
+                with zipfile.ZipFile(self.path) as z:
+                    comp = sum(i.compress_size for i in z.infolist())
+                    uncomp = sum(i.file_size for i in z.infolist())
+                    # mzPeak MUST store members uncompressed (ratio ~1); a large, highly-inflating
+                    # archive is a zip bomb, not a conformant file — refuse before extracting.
+                    if uncomp > 100_000_000 and comp and uncomp / comp > 50:
+                        raise ValueError(f"refusing to extract: {uncomp} bytes uncompressed vs {comp} "
+                                         f"compressed ({uncomp / comp:.0f}x) — mzPeak members must be stored uncompressed")
+                    z.extractall(self._tmp)
+                self.root = Path(self._tmp)
+            idx = self.root / "mzpeak_index.json"
+            self.index = json.loads(idx.read_text()) if idx.exists() else None
+        except BaseException:
+            self.cleanup()
+            raise
 
     def cleanup(self):
         if self._tmp:
@@ -235,7 +239,9 @@ class Profile:
                     elif line.startswith("id:"):
                         cur = line[3:].strip()
                     elif line.startswith("is_a:") and cur:
-                        isa.setdefault(cur, set()).add(line[5:].split("!")[0].strip().split()[0] if line[5:].strip() else "")
+                        toks = line[5:].split("!")[0].split()      # "is_a: MS:1000044 ! dissociation method"
+                        if toks:
+                            isa.setdefault(cur, set()).add(toks[0])
                     elif line.startswith("is_obsolete:") and "true" in line:
                         obs = True
             if cur and not obs: accs.add(cur)
@@ -510,7 +516,7 @@ def p_grouped_monotonic(ar, rule, rep, params):
         j = int(np.argmax(bad))
         row, prev, cur = int(order[j + 1]), vs[j], vs[j + 1]
         gid = gs[j]
-        rep.add(rule, "error",
+        rep.add(rule, rule.get("severity", "error"),
                 f"{f}.{col} not {params['direction']} within {grp}: {int(bad.sum())} inversion(s); "
                 f"in {grp}={gid}, value {cur} (row {row}) < previous {prev}", {"file": f, "row": row}, recovery="reorder_pair")
 
@@ -527,7 +533,7 @@ def p_foreign_key(ar, rule, rep, params):
         parts = []
         if missing: parts.append(f"{len(missing)} value(s) with no {rf}.{rc} (e.g. {missing[:3]})")
         if flag_null: parts.append(f"{child.null_count} null")
-        rep.add(rule, "error", f"{f}.{col}: " + "; ".join(parts), {"file": f, "column": col})
+        rep.add(rule, rule.get("severity", "error"), f"{f}.{col}: " + "; ".join(parts), {"file": f, "column": col})
 
 def p_index_contiguous(ar, rule, rep, params):
     f, col = params["file"], params["column"]
@@ -598,12 +604,15 @@ def p_cv_list_consistency(ar, rule, rep, params):
     # snapshot — that means the validator is behind and should refresh its bundled CV (its CURIE
     # resolution may be stale). A file pinned to the SAME or an OLDER version is expected and benign,
     # so it must NOT warn (a plain difference is not a problem). _vkey extracts numeric components,
-    # so it orders both dotted ("4.1.248") and date ("2026-01-16") version strings.
+    # _vkey extracts numeric components, so it orders dotted ("4.1.248") and date ("2026-01-16")
+    # versions each consistently with ITSELF. It cannot compare across schemes (a date vs a dotted
+    # release), so we only warn when declared and pinned share a scheme (same component count).
     for e in cvl:
         if not (isinstance(e, dict) and e.get("id") in pinned and e.get("version")):
             continue
         declared_v, pinned_v = str(e["version"]), str(pinned[e["id"]])
-        if _vkey(declared_v) > _vkey(pinned_v):
+        dk, pk = _vkey(declared_v), _vkey(pinned_v)
+        if len(dk) == len(pk) and dk > pk:
             rep.add(rule, "warning", f"cv_list declares {e['id']} version {declared_v}, newer than the "
                     f"profile's pinned {pinned_v} — update the validator's bundled {e['id']} CV snapshot "
                     f"(CURIEs currently resolve against the older pinned copy)")
@@ -616,7 +625,7 @@ def p_count_sum_equals_rows(ar, rule, rep, params):
     # null counts are treated as 0: a centroid spectrum has no profile points (its data lives in spectra_peaks)
     total = pc.sum(ar.column(cnt_file, cnt_col)).as_py() or 0
     if int(total) != ar.num_rows(f):
-        rep.add(rule, "error", f"{f}: sum({cnt_col})={total} != {f} rows={ar.num_rows(f)}",
+        rep.add(rule, rule.get("severity", "error"), f"{f}: sum({cnt_col})={total} != {f} rows={ar.num_rows(f)}",
                 {"file": f}, recovery="rederive")
 
 def p_grouped_count_equals(ar, rule, rep, params):
@@ -630,12 +639,16 @@ def p_grouped_count_equals(ar, rule, rep, params):
     if not (has(ar, f, params.get("guard", grp)) and has(ar, cf, cc) and has(ar, cf, key)):
         return
     g = ar.column(f, grp)
-    gv = g.to_numpy(zero_copy_only=False)
-    gv = gv[~pc.is_null(g).to_numpy(zero_copy_only=False)]        # signal rows have non-null group ids
-    actual_ids, actual_cnt = np.unique(gv, return_counts=True)
+    gmask = ~pc.is_null(g).to_numpy(zero_copy_only=False)        # signal rows have non-null group ids
+    # keep integer ids exact: to_numpy() on a null-containing int column yields float64, collapsing
+    # distinct ids >= 2^53. Cast through Arrow (here and for the key column) before counting.
+    gall = (pc.fill_null(g.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+            if pa.types.is_integer(g.type) else g.to_numpy(zero_copy_only=False))
+    actual_ids, actual_cnt = np.unique(gall[gmask], return_counts=True)
     actual = dict(zip(actual_ids.tolist(), actual_cnt.tolist()))
     kcol = ar.column(cf, key); ccol = ar.column(cf, cc)
-    kv = kcol.to_numpy(zero_copy_only=False)
+    kv = (pc.fill_null(kcol.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+          if pa.types.is_integer(kcol.type) else kcol.to_numpy(zero_copy_only=False))
     cvv = ccol.to_numpy(zero_copy_only=False)
     knull = pc.is_null(kcol).to_numpy(zero_copy_only=False)
     cnull = pc.is_null(ccol).to_numpy(zero_copy_only=False)
@@ -665,22 +678,24 @@ def p_data_kind_facet(ar, rule, rep, params):
         if fe.get("data_kind") in want and fe.get("entity_type") in ent and ar.has_file(fe.get("name", "")):
             tops = {k.split(".")[0] for k in ar.fields(fe["name"])}
             if not (tops & need):
-                rep.add(rule, "error",
+                rep.add(rule, rule.get("severity", "error"),
                         f"{fe['name']}: index declares data_kind '{fe['data_kind']}' but the file has top-level "
                         f"columns {sorted(tops)} — none of the expected signal facets {sorted(need)}",
                         {"file": fe["name"]})
 
 def p_imaging_coordinates(ar, rule, rep, params):
     if not _imaging(ar): return
+    sev = rule.get("severity", "error")
     f = "spectra_metadata"; fields = ar.fields(f)
     has_x = any(k.endswith("IMS_1000050_position_x") for k in fields)
     has_y = any(k.endswith("IMS_1000051_position_y") for k in fields)
     if not (has_x and has_y):
-        rep.add(rule, "error", "imaging archive missing position_x and/or position_y column", {"file": f}); return
+        rep.add(rule, sev, "imaging archive missing position_x and/or position_y column", {"file": f}); return
     for path in [k for k in fields if k.endswith(("IMS_1000050_position_x", "IMS_1000051_position_y"))]:
         v = ar.column(f, path).to_numpy(zero_copy_only=False)
-        if len(v) and np.nanmin(v) < 1:
-            rep.add(rule, "error", f"{f}.{path}: minimum coordinate {np.nanmin(v):g} < 1 "
+        finite = v[np.isfinite(v)]                            # nulls -> NaN; ignore them (np.nanmin would warn on all-null)
+        if len(finite) and finite.min() < 1:
+            rep.add(rule, sev, f"{f}.{path}: minimum coordinate {finite.min():g} < 1 "
                     f"(imaging coordinates must be 1-based)", {"file": f, "column": path})
 
 # --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
@@ -869,7 +884,7 @@ PRIMITIVES = {
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
-             "count_sum_equals_rows", "blob_hash", "grouped_count_equals"}
+             "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates"}
 
 # -------------------------------------------------------------------------------- run
 def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
