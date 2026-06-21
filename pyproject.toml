@@ -7,7 +7,7 @@ name = "mzpeak-validator"
 version = "0.9.1"
 description = "Language-independent-by-design validator for the HUPO-PSI mzPeak mass-spectrometry format."
 readme = "README.md"
-requires-python = ">=3.7"
+requires-python = ">=3.9"
 authors = [{name = "Oliver Kohlbacher", email = "okohlbacher@googlemail.com"}]
 license = {text = "MIT"}
 keywords = ["mzPeak", "mass-spectrometry", "HUPO-PSI", "proteomics", "imaging-MS", "validation", "parquet"]
@@ -18,7 +18,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Bio-Informatics",
   "Programming Language :: Python :: 3",
 ]
-dependencies = ["pyarrow>=12", "numpy", "jsonschema>=3"]
+dependencies = ["pyarrow>=17", "numpy", "jsonschema>=3"]
 
 [project.scripts]
 mzpeak-validate = "mzpeak_validator.core:main"
