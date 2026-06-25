@@ -14,6 +14,7 @@
     {"role": "cv", "id": "MS",  "version": "4.1.254",    "path": "cv/psi-ms.obo.gz", "sha256": null},
     {"role": "cv", "id": "IMS", "version": "1.1.0",      "path": "cv/imagingMS.obo", "sha256": null},
     {"role": "cv", "id": "UO",  "version": "2026-01-16", "path": "cv/uo.obo",        "sha256": null},
+    {"role": "cv", "id": "MZP", "version": "0.1.0",      "path": "cv/mzpeak.obo",    "sha256": null},
     {"role": "json-schema", "id": "mzpeak_index_legacy", "path": "schema/mzpeak_index.schema.json", "sha256": null},
     {"role": "json-schema", "id": "mzpeak_index",          "path": "schema/json/mzpeak_index.json",          "sha256": null},
     {"role": "json-schema", "id": "cv_list",               "path": "schema/json/cv_list.json",               "sha256": null},

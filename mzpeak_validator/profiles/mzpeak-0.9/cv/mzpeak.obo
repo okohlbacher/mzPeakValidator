@@ -1,0 +1,40 @@
+format-version: 1.4
+data-version: 0.1.0
+ontology: mzpeak
+default-namespace: mzpeak
+remark: Converter-owned provisional controlled vocabulary for mzPeakConverter. These terms cover the
+remark: TOF/IMS grid encoding (integer-grid -> m/z reconstruction transforms and their per-spectrum
+remark: coefficients) and are NOT yet in PSI-MS. They use the local MZP prefix instead of squatting the
+remark: PSI-owned MS namespace. Each carries a "suggested PSI-MS name" so it can be retired in favour of
+remark: an assigned MS term once the mzPeak specification standardises the grid layout (see BACKLOG.md).
+remark: Prefix MZP resolves to this file.
+
+[Term]
+id: MZP:1000001
+name: square-root m/z from TOF index transformation
+def: "An array transformation that reconstructs an m/z array from a stored integer time-of-flight index k as m/z = (c0 + c1*k)^2. The coefficients [c0, c1] are carried in the array's transform parameters. Used for profile/raw time-of-flight data acquired on the flight-time lattice." []
+comment: Provisional; suggested PSI-MS name "square-root m/z from TOF index transformation". Sibling of the null-marking transforms MS:1003901 / MS:1003902.
+
+[Term]
+id: MZP:1000002
+name: linear m/z grid transformation
+def: "An array transformation that reconstructs an m/z array from a stored integer index k as m/z = s*k, where s is a uniform bin width carried in the array's transform parameters. Used for centroided time-of-flight data that no longer sits on the flight-time lattice." []
+comment: Provisional; suggested PSI-MS name "linear m/z grid transformation".
+
+[Term]
+id: MZP:1000003
+name: time-of-flight grid coefficient c0
+def: "The constant term c0 of the per-spectrum square-root TOF reconstruction m/z = (c0 + c1*k)^2, stored as a per-spectrum value of type double." []
+comment: Provisional spectrum/scan attribute.
+
+[Term]
+id: MZP:1000004
+name: time-of-flight grid coefficient c1
+def: "The linear term c1 of the per-spectrum square-root TOF reconstruction m/z = (c0 + c1*k)^2, stored as a per-spectrum value of type double." []
+comment: Provisional spectrum/scan attribute.
+
+[Term]
+id: MZP:1000005
+name: time-of-flight calibration identifier
+def: "Selects the per-spectrum polynomial-refinement row in the tof_calibration index block, so the exact vendor m/z reconstructs. Stored as a per-spectrum non-negative integer." []
+comment: Provisional spectrum/scan attribute.

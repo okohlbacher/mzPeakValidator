@@ -4,7 +4,7 @@
   "description": "Describe the JSON format of the controlled vocabulary list, analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#cvList",
   "type": "array",
   "items": {
-    "$ref": "#definitions/cv"
+    "$ref": "#/definitions/cv"
   },
   "definitions": {
     "cv": {

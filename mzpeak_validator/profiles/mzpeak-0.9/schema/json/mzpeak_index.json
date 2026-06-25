@@ -49,6 +49,56 @@
         },
         "run": {
           "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/ms_run.json"
+        },
+        "tof_calibration": {
+          "type": "object",
+          "description": "Reconstructs m/z from a stored integer TOF grid index for a time-of-flight grid layout.",
+          "additionalProperties": true,
+          "required": ["codec", "lossless"],
+          "properties": {
+            "codec": { "type": "string", "const": "tof-grid" },
+            "model": { "type": "string" },
+            "lossless": { "type": "string" },
+            "mz_from_tof_index": { "type": "string" },
+            "c0": { "type": "number" },
+            "c1": { "type": "number" },
+            "per_spectrum_columns": { "type": "array", "items": { "type": "string" } },
+            "calibrations": { "type": "array", "items": { "type": "object" } },
+            "max_roundtrip_ppm": { "type": "number" }
+          }
+        },
+        "ims_calibration": {
+          "type": "object",
+          "description": "Reconstructs m/z from a stored integer TOF column for a Bruker timsTOF ims-compact run as (a + b*tof)^2.",
+          "additionalProperties": true,
+          "required": ["codec", "lossless"],
+          "properties": {
+            "codec": { "type": "string", "const": "ims-compact" },
+            "lossless": { "type": "string" },
+            "mz_from_tof": { "type": "string" },
+            "tof_encoding": { "type": "string" },
+            "a": { "type": "number" },
+            "b": { "type": "number" }
+          }
+        },
+        "vendor_files": {
+          "type": "array",
+          "description": "Manifest of the original vendor side-files: per file, embedded into vendor/ or dropped.",
+          "items": {
+            "type": "object",
+            "required": ["path", "action"],
+            "properties": {
+              "path": { "type": "string" },
+              "action": { "type": "string", "enum": ["embed", "drop"] },
+              "content_encoding": { "type": "string" },
+              "bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        },
+        "vendor_metadata": {
+          "type": "object",
+          "description": "Run-level key-value metadata copied verbatim from the vendor container (e.g. Bruker GlobalMetadata).",
+          "additionalProperties": true
         }
       }
     }
