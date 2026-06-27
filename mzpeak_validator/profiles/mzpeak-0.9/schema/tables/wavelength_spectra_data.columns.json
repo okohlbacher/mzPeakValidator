@@ -1,0 +1,12 @@
+{
+  "file": "wavelength_spectra_data",
+  "note": "Point or chunk layout for wavelength spectrum signal data. Key difference from spectra_data: the entity index column MUST be named 'wavelength_spectrum_index' (spec MUST: docs/schemas/wavelength-spectra.md). Signal columns (wavelength axis, intensity) follow the same point/chunk layout conventions as spectra_data but their names are CV-governed via the array_index footer. All point columns marked required:false so chunk-layout archives are not false-failed; data_kind_has_facet_wavelength separately checks that either point or chunk is present.",
+  "facets": {
+    "point": {
+      "required": false,
+      "columns": {
+        "wavelength_spectrum_index": {"type": ["uint"], "required": false}
+      }
+    }
+  }
+}

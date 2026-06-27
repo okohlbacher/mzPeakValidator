@@ -78,6 +78,10 @@
      "doc": "chromatogram.index is 0-based contiguous (0..k-1) over its non-null entries. The chromatogram analog of spectrum_index_contiguous; no-ops on archives without chromatograms_metadata.",
      "params": {"file": "chromatograms_metadata", "column": "chromatogram.index"}},
 
+    {"id": "wavelength_spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
+     "doc": "wavelength_spectra_metadata spectrum.index is 0-based contiguous over non-null entries. No-ops when absent.",
+     "params": {"file": "wavelength_spectra_metadata", "column": "spectrum.index"}},
+
     {"id": "precursor_source_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
      "doc": "precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from.",
      "params": {"file": "spectra_metadata", "column": "precursor.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
@@ -92,6 +96,10 @@
 
     {"id": "per_spectrum_peaks", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
      "doc": "Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points.",
-     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003059_number_of_peaks", "key_column": "spectrum.index"}}
+     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003059_number_of_peaks", "key_column": "spectrum.index"}},
+
+    {"id": "wavelength_point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "wavelength_spectra_data point.wavelength_spectrum_index must resolve to wavelength_spectra_metadata spectrum.index. The wavelength-spectra analog of point_fk_data. No-ops when either table is absent.",
+     "params": {"file": "wavelength_spectra_data", "column": "point.wavelength_spectrum_index", "ref_file": "wavelength_spectra_metadata", "ref_column": "spectrum.index"}}
   ]
 }

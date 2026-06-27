@@ -31,6 +31,8 @@
     {"role": "columns", "id": "spectra_data",     "path": "schema/tables/spectra_data.columns.json",     "sha256": null},
     {"role": "columns", "id": "spectra_peaks",    "path": "schema/tables/spectra_peaks.columns.json",    "sha256": null},
     {"role": "columns", "id": "chromatograms_metadata", "path": "schema/tables/chromatograms_metadata.columns.json", "sha256": null},
+    {"role": "columns", "id": "wavelength_spectra_metadata", "path": "schema/tables/wavelength_spectra_metadata.columns.json", "sha256": null},
+    {"role": "columns", "id": "wavelength_spectra_data", "path": "schema/tables/wavelength_spectra_data.columns.json", "sha256": null},
     {"role": "rules", "path": "rules/structural.rules.json", "sha256": null},
     {"role": "rules", "path": "rules/cv.rules.json",         "sha256": null},
     {"role": "rules", "path": "rules/numeric.rules.json",    "sha256": null},

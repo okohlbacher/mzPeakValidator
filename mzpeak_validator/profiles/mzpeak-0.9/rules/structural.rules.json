@@ -38,6 +38,18 @@
 
     {"id": "columns_chromatograms_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
      "doc": "chromatograms_metadata carries the required structural facets/columns (chromatogram.index/id keys; FK keys on precursor/selected_ion/product when present), per schema/tables/chromatograms_metadata.columns.json. CV-inflected columns are validated separately by cv_inflection. No-ops on archives without a chromatograms_metadata table.",
-     "params": {"file": "chromatograms_metadata"}}
+     "params": {"file": "chromatograms_metadata"}},
+
+    {"id": "data_kind_has_facet_wavelength", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",
+     "doc": "A file the index advertises as wavelength spectrum 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without wavelength spectra.",
+     "params": {"data_kinds": ["data arrays"], "facets": ["point", "chunk"], "entity_types": ["wavelength spectrum"]}},
+
+    {"id": "columns_wavelength_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "wavelength_spectra_metadata matches schema/tables/wavelength_spectra_metadata.columns.json: required spectrum.index primary key and scan.source_index FK; no precursor/selected_ion facets. No-ops when absent.",
+     "params": {"file": "wavelength_spectra_metadata"}},
+
+    {"id": "columns_wavelength_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "wavelength_spectra_data point layout matches schema/tables/wavelength_spectra_data.columns.json: entity index MUST be named wavelength_spectrum_index (not spectrum_index). No-ops when absent.",
+     "params": {"file": "wavelength_spectra_data"}}
   ]
 }

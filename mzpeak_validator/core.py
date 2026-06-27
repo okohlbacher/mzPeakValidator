@@ -29,20 +29,40 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
-# Build an offline JSON-Schema validator with a $ref store.
+# Build an offline JSON-Schema validator with a $ref store and a CURIE format checker.
 # jsonschema 4.18+ replaced RefResolver with the `referencing` library;
 # support both so the code runs on jsonschema 3–4+.
+_CURIE_FC = None
+def _get_fc():
+    global _CURIE_FC
+    if _CURIE_FC is None:
+        import jsonschema
+        fc = jsonschema.FormatChecker()
+        # The built-in "curie" checker uses the strict W3C CURIE spec and rejects valid mzPeak
+        # CV terms like "MS:1000514" (numeric local part). Replace it with the permissive
+        # namespace:local check that matches the spec's own pattern constraint.
+        fc.checkers.pop("curie", None)
+        @fc.checks("curie", raises=ValueError)
+        def _(v):
+            if isinstance(v, str) and not re.match(r"^\S+:\S+$", v):
+                raise ValueError(v)
+            return True
+        _CURIE_FC = fc
+    return _CURIE_FC
+
 try:
     import referencing as _ref, referencing.jsonschema as _rjsc
     def _schema_validator(schema, store):
         resources = [(u, _rjsc.DRAFT7.create_resource(s)) for u, s in store.items()]
         return __import__("jsonschema").Draft7Validator(
-            schema, registry=_ref.Registry().with_resources(resources))
+            schema, registry=_ref.Registry().with_resources(resources),
+            format_checker=_get_fc())
 except ImportError:                                             # jsonschema < 4.18
     def _schema_validator(schema, store):
         import jsonschema
         return jsonschema.Draft7Validator(
-            schema, resolver=jsonschema.RefResolver("", schema, store=store))
+            schema, resolver=jsonschema.RefResolver("", schema, store=store),
+            format_checker=_get_fc())
 
 CATALOG_VERSION = "1.10"         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
 PROFILES_ROOT = Path(__file__).parent / "profiles"
@@ -446,6 +466,25 @@ def p_json_schema(ar, rule, rep, params):
         loc = "/".join(str(p) for p in e.path) or "(root)"
         rep.add(rule, sev, f"{where}: schema violation at {loc}: {e.message}",
                 {"file": params.get("file", ""), "column": loc})
+    # buffer_format_uniform: all entries must share the same buffer_format (point layout is all-or-nothing)
+    if params.get("buffer_format_uniform") and isinstance(doc, dict):
+        entries = doc.get("entries") or []
+        fmts = {e.get("buffer_format") for e in entries if isinstance(e, dict) and e.get("buffer_format")}
+        if len(fmts) > 1:
+            rep.add(rule, sev, f"{where}: mixed buffer_format {sorted(fmts)} — point layout is all-or-nothing",
+                    {"file": params.get("file", "")})
+    # cv_parents: check entries[*].field values are OBO descendants of a required parent term
+    isa = params.get("_cv_isa", {})
+    for cp in params.get("cv_parents", []):
+        m = re.match(r"^entries\[\*\]\.(\w+)$", cp.get("path", ""))
+        if not m:
+            continue
+        field, parent = m.group(1), cp["parent"]
+        for i, entry in enumerate((doc.get("entries") or []) if isinstance(doc, dict) else []):
+            v = entry.get(field)
+            if v and isinstance(v, str) and not _is_descendant(isa, v, parent):
+                rep.add(rule, sev, f"{where}: entries/{i}/{field} {v!r} is not a descendant of {parent}",
+                        {"file": params.get("file", "")})
 
 def p_footer_count_equals_rows(ar, rule, rep, params):
     f, key = params["file"], params["footer_key"]
@@ -1107,6 +1146,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
             elif prim == "json_schema":
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
                 params["_schema_store"] = prof._json_schema_store
+                params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim == "footer_count_equals_rows":
                 params["_quick"] = quick
             elif prim in ("cv_mapping", "cv_mapping_json"):

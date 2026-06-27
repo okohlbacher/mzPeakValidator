@@ -47,15 +47,30 @@
      "params": {"file": "spectra_metadata", "footer_key": "scan_settings_list", "schema": "scan_settings_list"}},
 
     {"id": "array_index_data_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
-     "doc": "spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json (entries, path, buffer_format, data/array types, sorting_rank, ...).",
-     "params": {"file": "spectra_data", "footer_key": "spectrum_array_index", "schema": "array_index"}},
+     "doc": "spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json; data_type must be MS:1000518 child, array_type must be MS:1000513 child; all entries must share one buffer_format (point layout is all-or-nothing).",
+     "params": {"file": "spectra_data", "footer_key": "spectrum_array_index", "schema": "array_index",
+                "buffer_format_uniform": true,
+                "cv_parents": [
+                  {"path": "entries[*].data_type", "parent": "MS:1000518"},
+                  {"path": "entries[*].array_type", "parent": "MS:1000513"}
+                ]}},
 
     {"id": "array_index_peaks_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
-     "doc": "spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json.",
-     "params": {"file": "spectra_peaks", "footer_key": "spectrum_array_index", "schema": "array_index"}},
+     "doc": "spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json; same ancestry and uniformity checks as array_index_data_valid.",
+     "params": {"file": "spectra_peaks", "footer_key": "spectrum_array_index", "schema": "array_index",
+                "buffer_format_uniform": true,
+                "cv_parents": [
+                  {"path": "entries[*].data_type", "parent": "MS:1000518"},
+                  {"path": "entries[*].array_type", "parent": "MS:1000513"}
+                ]}},
 
     {"id": "array_index_chromatograms_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
-     "doc": "chromatograms_data footer 'chromatogram_array_index' conforms to schema/json/array_index.json. No-ops on archives without chromatograms_data.",
-     "params": {"file": "chromatograms_data", "footer_key": "chromatogram_array_index", "schema": "array_index"}}
+     "doc": "chromatograms_data footer 'chromatogram_array_index' conforms to schema/json/array_index.json; same ancestry and uniformity checks. No-ops on archives without chromatograms_data.",
+     "params": {"file": "chromatograms_data", "footer_key": "chromatogram_array_index", "schema": "array_index",
+                "buffer_format_uniform": true,
+                "cv_parents": [
+                  {"path": "entries[*].data_type", "parent": "MS:1000518"},
+                  {"path": "entries[*].array_type", "parent": "MS:1000513"}
+                ]}}
   ]
 }

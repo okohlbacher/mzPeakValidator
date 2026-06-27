@@ -15,9 +15,14 @@
      "doc": "mzPeak ZIP members MUST be stored uncompressed (the format relies on stored members for direct/remote range access; the engine also refuses high-inflation archives as a zip-bomb guard). Directory archives are skipped.",
      "params": {}},
 
-    {"id": "facet_key_column_first", "primitive": "column_order", "severity": "warning", "recovery": "none",
-     "doc": "The entity-index / foreign-key column should be the first column of its facet (spectrum.index, scan/precursor/selected_ion.source_index). Advisory: a conformant reader resolves columns by name/array-index, not position, so this never FAILs an archive.",
+    {"id": "facet_key_column_first", "primitive": "column_order", "severity": "error", "recovery": "none",
+     "doc": "The entity-index / foreign-key column MUST be the first column of its facet (spec MUST; promotes from advisory to error — 0 corpus violations confirmed).",
      "params": {"file": "spectra_metadata",
-                "expected": {"spectrum": "index", "scan": "source_index", "precursor": "source_index", "selected_ion": "source_index"}}}
+                "expected": {"spectrum": "index", "scan": "source_index", "precursor": "source_index", "selected_ion": "source_index"}}},
+
+    {"id": "wavelength_facet_key_column_first", "primitive": "column_order", "severity": "error", "recovery": "none",
+     "doc": "wavelength_spectra_metadata: spectrum.index and scan.source_index MUST be the first columns of their facets (spec docs/schemas/wavelength-spectra.md). No-ops when the table is absent.",
+     "params": {"file": "wavelength_spectra_metadata",
+                "expected": {"spectrum": "index", "scan": "source_index"}}}
   ]
 }

@@ -1,0 +1,21 @@
+{
+  "file": "wavelength_spectra_metadata",
+  "note": "Packed parallel-facet layout for wavelength (UV/DAD/EMR) spectrum metadata. Mirrors spectra_metadata but WITHOUT precursor/selected_ion facets (EMR spectra have no isolation or fragmentation). Required: spectrum.index primary key (uint) and scan.source_index FK (uint). Per spec docs/schemas/wavelength-spectra.md: 'spectrum.index and scan.source_index MUST be the first column of their respective facets.'",
+  "facets": {
+    "spectrum": {
+      "required": true,
+      "columns": {
+        "index": {"type": "uint", "required": true},
+        "id": {"type": "string", "required": false},
+        "MS_1003060_number_of_data_points": {"type": "uint", "required": false},
+        "number_of_auxiliary_arrays": {"type": "uint", "required": false}
+      }
+    },
+    "scan": {
+      "required": false,
+      "columns": {
+        "source_index": {"type": "uint", "required": true}
+      }
+    }
+  }
+}
