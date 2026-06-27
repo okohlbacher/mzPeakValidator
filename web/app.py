@@ -1,0 +1,330 @@
+"""mzPeak Validator web service — FastAPI frontend for mzpeak_validator.run()."""
+import asyncio
+import os
+import sys
+import tempfile
+from html import escape
+from pathlib import Path
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import HTMLResponse
+
+try:
+    from mzpeak_validator import run
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).parent.parent))
+    from mzpeak_validator import run
+
+MAX_BYTES = 1 << 30   # 1 GiB hard limit
+CHUNK     = 1 << 20   # 1 MiB read chunks
+
+app = FastAPI(title="mzPeak Validator")
+
+
+class _TooLarge(Exception):
+    pass
+
+
+# ── I/O helpers ────────────────────────────────────────────────────────────────
+
+async def _save_upload(request: Request, upload: UploadFile) -> str:
+    cl = request.headers.get("content-length")
+    if cl and int(cl) > MAX_BYTES:
+        raise _TooLarge
+    fd, path = tempfile.mkstemp(suffix=".mzpeak")
+    try:
+        written = 0
+        with os.fdopen(fd, "wb") as f:
+            while True:
+                chunk = await upload.read(CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > MAX_BYTES:
+                    raise _TooLarge
+                f.write(chunk)
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+    return path
+
+
+async def _fetch_https(url: str) -> str:
+    import httpx
+    fd, path = tempfile.mkstemp(suffix=".mzpeak")
+    try:
+        written = 0
+        with os.fdopen(fd, "wb") as f:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=600) as client:
+                async with client.stream("GET", url) as resp:
+                    resp.raise_for_status()
+                    cl = resp.headers.get("content-length")
+                    if cl and int(cl) > MAX_BYTES:
+                        raise _TooLarge
+                    async for chunk in resp.aiter_bytes(CHUNK):
+                        written += len(chunk)
+                        if written > MAX_BYTES:
+                            raise _TooLarge
+                        f.write(chunk)
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+    return path
+
+
+async def _fetch_s3(bucket: str, key: str) -> str:
+    try:
+        import boto3
+    except ImportError:
+        raise RuntimeError(
+            "S3 support requires boto3. Add it to web/requirements.txt and rebuild the image."
+        )
+    s3 = boto3.client("s3")
+    head = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: s3.head_object(Bucket=bucket, Key=key)
+    )
+    if head["ContentLength"] > MAX_BYTES:
+        raise _TooLarge
+    fd, path = tempfile.mkstemp(suffix=".mzpeak")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: s3.download_fileobj(bucket, key, f)
+            )
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+    return path
+
+
+# ── HTML rendering ─────────────────────────────────────────────────────────────
+
+_STYLE = """
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:system-ui,sans-serif;background:#f8fafc;color:#0f172a;padding:2rem 1rem}
+.wrap{max-width:900px;margin:0 auto}
+h1{font-size:1.6rem;font-weight:700;margin-bottom:.25rem}
+.sub{color:#64748b;margin-bottom:1.5rem;font-size:.95rem}
+.card{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:1.5rem;margin-bottom:1.5rem;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+label{display:block;font-weight:600;margin-bottom:.4rem;font-size:.875rem;color:#374151}
+input[type=text]{width:100%;padding:.5rem .75rem;border:1px solid #d1d5db;border-radius:6px;font-size:.95rem;font-family:monospace}
+input[type=file]{width:100%;padding:.4rem 0;font-size:.9rem}
+.tabs{display:flex;gap:.5rem;margin-bottom:1.25rem}
+.tab{padding:.35rem 1rem;border:1px solid #d1d5db;border-radius:6px;cursor:pointer;font-size:.875rem;background:#fff;color:#374151}
+.tab:hover{background:#f1f5f9}
+.tab.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.pane{display:none}.pane.active{display:block}
+.hint{font-size:.8rem;color:#6b7280;margin-top:.35rem}
+button[type=submit]{margin-top:1rem;padding:.5rem 1.5rem;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.95rem;font-weight:600}
+button[type=submit]:hover{background:#1d4ed8}
+button[type=submit]:disabled{background:#93c5fd;cursor:not-allowed}
+.verdict{font-size:1.4rem;font-weight:800;margin-bottom:.5rem}
+.pass{color:#16a34a}.fail{color:#dc2626}
+.counts{color:#64748b;margin-bottom:1rem;font-size:.9rem}
+table{width:100%;border-collapse:collapse;font-size:.82rem}
+th{background:#f1f5f9;text-align:left;padding:.45rem .7rem;border-bottom:2px solid #e2e8f0;white-space:nowrap}
+td{padding:.4rem .7rem;border-bottom:1px solid #f1f5f9;vertical-align:top;word-break:break-word}
+.pill{display:inline-block;padding:.1rem .45rem;border-radius:999px;font-size:.73rem;font-weight:600}
+.e{background:#fee2e2;color:#991b1b}
+.w{background:#fef3c7;color:#92400e}
+.i{background:#f3f4f6;color:#374151}
+.fix{color:#6b7280;font-size:.78rem}
+.err-box{background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:1rem;color:#991b1b;margin-bottom:1rem}
+.big-box{background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:1rem;margin-bottom:1rem}
+.big-box code{background:#f1f5f9;padding:.1rem .35rem;border-radius:4px;font-size:.85rem}
+a{color:#2563eb}footer{margin-top:2rem;color:#94a3b8;font-size:.8rem}
+"""
+
+_FORM = """
+<div class="card">
+  <div class="tabs">
+    <button type="button" class="tab active" onclick="switchTab(0)">URL</button>
+    <button type="button" class="tab"        onclick="switchTab(1)">Upload file</button>
+  </div>
+  <form method="post" action="/validate" enctype="multipart/form-data" onsubmit="return onSubmit(this)">
+    <div class="pane active" id="p0">
+      <label for="url">HTTPS or S3 URL</label>
+      <input type="text" name="url" id="url"
+             placeholder="https://example.com/run.mzpeak   or   s3://bucket/key.mzpeak">
+      <p class="hint">Accepts <code>https://</code> and <code>s3://bucket/key</code>.
+         AWS credentials are read from the server environment (IAM role or env vars).</p>
+    </div>
+    <div class="pane" id="p1">
+      <label for="file">Archive file</label>
+      <input type="file" name="file" id="file" accept=".mzpeak,.zip">
+      <p class="hint">Max 1 GB. Larger files: use the
+         <a href="https://github.com/okohlbacher/mzPeakValidator" target="_blank">CLI tool</a>.</p>
+    </div>
+    <button type="submit" id="btn">Validate</button>
+  </form>
+</div>
+"""
+
+_SCRIPT = """
+<script>
+var activeTab = 0;
+function switchTab(n) {
+  activeTab = n;
+  document.querySelectorAll('.tab').forEach(function(t,i){t.classList.toggle('active',i===n);});
+  document.querySelectorAll('.pane').forEach(function(p,i){p.classList.toggle('active',i===n);});
+}
+function onSubmit(form) {
+  var url  = (document.getElementById('url').value  || '').trim();
+  var file = document.getElementById('file').files[0];
+  if (activeTab === 0 && !url)  { alert('Please enter a URL.'); return false; }
+  if (activeTab === 1 && !file) { alert('Please choose a file.'); return false; }
+  if (activeTab === 0) document.getElementById('file').disabled = true;
+  if (activeTab === 1) document.getElementById('url').disabled  = true;
+  var btn = document.getElementById('btn');
+  btn.disabled = true; btn.textContent = 'Validating…';
+  return true;
+}
+</script>
+"""
+
+
+def _page(body: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mzPeak Validator</title>
+<style>{_STYLE}</style>
+</head>
+<body>
+<div class="wrap">
+<h1>mzPeak Validator</h1>
+<p class="sub">Check a <code>.mzpeak</code> archive against the HUPO-PSI specification.</p>
+{body}
+<footer>
+  <a href="https://github.com/okohlbacher/mzPeakValidator" target="_blank">mzPeakValidator</a>
+  &nbsp;·&nbsp; profile mzpeak-0.9
+  &nbsp;·&nbsp; <a href="https://mzpeak.org" target="_blank">mzpeak.org</a>
+</footer>
+</div>
+{_SCRIPT}
+</body></html>"""
+
+
+def _render_findings(result: dict) -> str:
+    findings = result.get("findings", [])
+    if not findings:
+        return "<p style='color:#16a34a;margin-top:.5rem'>No findings.</p>"
+    rows = []
+    for f in findings:
+        lvl   = f.get("level", "info")
+        pill  = {"error": "e", "warning": "w"}.get(lvl, "i")
+        loc   = f.get("location") or {}
+        loc_s = escape(", ".join(f"{k}={v}" for k, v in loc.items())) if loc else "—"
+        cnt   = f.get("count", 1)
+        msg   = escape(f["message"])
+        if cnt > 1:
+            msg += f" <span style='color:#6b7280'>×{cnt}</span>"
+        fix = f.get("fix") or ""
+        if fix:
+            msg += f'<br><span class="fix">fix: {escape(fix)}</span>'
+        rows.append(
+            f"<tr>"
+            f"<td><span class='pill {pill}'>{lvl}</span></td>"
+            f"<td style='font-family:monospace;font-size:.78rem'>{escape(f.get('ruleId',''))}</td>"
+            f"<td>{msg}</td>"
+            f"<td style='color:#6b7280;font-family:monospace;font-size:.78rem'>{loc_s}</td>"
+            f"<td style='color:#6b7280'>{escape(f.get('recovery','none'))}</td>"
+            f"</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>Level</th><th>Rule</th><th>Message</th><th>Location</th><th>Recovery</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
+
+
+def _result_html(result: dict) -> str:
+    v  = result["verdict"]
+    s  = result["summary"]
+    vc = "pass" if v == "PASS" else "fail"
+    prof = escape(result.get("profile") or "—")
+    return (
+        f'<div class="card">'
+        f'<p class="verdict {vc}">{v}</p>'
+        f'<p class="counts">'
+        f'{s["errors"]} error(s) &nbsp;·&nbsp; {s["warnings"]} warning(s)'
+        f' &nbsp;·&nbsp; profile {prof}'
+        f'</p>'
+        + _render_findings(result)
+        + f'</div>'
+        + _FORM
+    )
+
+
+def _err(msg: str) -> str:
+    return f'<div class="err-box"><strong>Error:</strong> {escape(msg)}</div>' + _FORM
+
+
+_TOO_LARGE = (
+    '<div class="big-box">'
+    '<strong>File exceeds the 1 GB web limit.</strong><br>'
+    'For large archives use the <a href="https://github.com/okohlbacher/mzPeakValidator"'
+    ' target="_blank">mzPeak Validator CLI</a>:<br>'
+    '<code>pip install mzpeak-validator &amp;&amp; mzpeak-validate archive.mzpeak</code>'
+    '</div>'
+    + _FORM
+)
+
+
+# ── Routes ─────────────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    return _page(_FORM)
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+
+
+@app.post("/validate", response_class=HTMLResponse)
+async def validate(
+    request: Request,
+    url:  str        = Form(default=""),
+    file: UploadFile = File(default=None),
+):
+    path = None
+    try:
+        url = (url or "").strip()
+        if url:
+            parsed = urlparse(url)
+            if parsed.scheme == "s3":
+                path = await _fetch_s3(parsed.netloc, parsed.path.lstrip("/"))
+            elif parsed.scheme in ("http", "https"):
+                path = await _fetch_https(url)
+            else:
+                return HTMLResponse(
+                    _page(_err(f"Unsupported URL scheme '{parsed.scheme}'. Use https:// or s3://")),
+                    status_code=400,
+                )
+        elif file and file.filename:
+            path = await _save_upload(request, file)
+        else:
+            return HTMLResponse(_page(_err("Please provide a URL or upload a file.")), status_code=400)
+
+        result = await asyncio.get_event_loop().run_in_executor(None, run, path)
+        return _page(_result_html(result))
+
+    except _TooLarge:
+        return HTMLResponse(_page(_TOO_LARGE), status_code=413)
+    except Exception as exc:
+        return HTMLResponse(_page(_err(str(exc))), status_code=500)
+    finally:
+        if path:
+            Path(path).unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
