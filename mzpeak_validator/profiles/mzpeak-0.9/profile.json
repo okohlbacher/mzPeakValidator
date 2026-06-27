@@ -2,7 +2,7 @@
   "profile_id": "mzpeak-0.9",
   "mzpeak_spec": {
     "version": "0.9",
-    "commit": "29e59b24f0ae9447a7f5fcf5c0606dce697b7847",
+    "commit": "ee6f2b2",
     "url": "https://github.com/HUPO-PSI/mzPeak-specification",
     "note": "Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0."
   },

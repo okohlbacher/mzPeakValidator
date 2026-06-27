@@ -2,13 +2,20 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak array index schema",
   "description": "Describe the JSON format of the mzPeak signal data array index that will be serialized in the file metadata",
-  "required": ["prefix"],
+  "required": ["prefix", "entries"],
   "type": "object",
   "properties": {
     "prefix": {
         "type": "string",
         "description": "The root node in the schema under which these arrays are organized.",
         "examples": ["point", "chunk"]
+    },
+    "entries": {
+        "type": "array",
+        "description": "The arrays registered under this index, one entry per Parquet column describing a (complete) signal array.",
+        "items": {
+            "$ref": "#/definitions/array_index_entry"
+        }
     }
   },
   "definitions": {

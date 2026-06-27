@@ -22,7 +22,7 @@
     },
     "data": {
       "type": "array",
-      "item": {
+      "items": {
         "type": "integer"
       },
       "contentMediaType": "application/octet-stream",

@@ -48,7 +48,9 @@ def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64(), mz_sor
         kv[b"spectrum_array_index"] = json.dumps(array_index).encode()
     elif mz_sorting_rank != "omit":    # convenience: declare just point.mz's sorting_rank
         kv[b"spectrum_array_index"] = json.dumps({"prefix": "point", "entries": [
-            {"path": "point.mz", "array_type": "MS:1000514", "sorting_rank": mz_sorting_rank}]}).encode()
+            {"array_name": "m/z array", "buffer_format": "point", "context": "spectrum",
+             "path": "point.mz", "data_type": "MS:1000521", "array_type": "MS:1000514",
+             "unit": "MS:1000040", "sorting_rank": mz_sorting_rank}]}).encode()
     return pa.table({"point": point}).replace_schema_metadata(kv)
 
 def _chunk_data(n=3, drop_end=False):
@@ -193,8 +195,11 @@ def build_all(out_root):
     # adversarial: a decoy MS:1000514 entry (for point.intensity, no rank) must NOT suppress the
     # m/z monotonicity gate — declared_sorted matches by path, not array_type (review C2).
     decoy = {"prefix": "point", "entries": [
-        {"path": "point.intensity", "array_type": "MS:1000514"},
-        {"path": "point.mz", "array_type": "MS:1000514", "sorting_rank": 0}]}
+        {"array_name": "intensity array", "buffer_format": "point", "context": "spectrum",
+         "path": "point.intensity", "data_type": "MS:1000521", "array_type": "MS:1000514", "unit": "MS:1000040"},
+        {"array_name": "m/z array", "buffer_format": "point", "context": "spectrum",
+         "path": "point.mz", "data_type": "MS:1000521", "array_type": "MS:1000514",
+         "unit": "MS:1000040", "sorting_rank": 0}]}
     case("fail", "decoy_array_index_entry", _meta(), _data(S, desc, IN, array_index=decoy), "FAIL", "mz_monotonic_data")
 
     # adversarial: an image member naming a path outside the archive must be treated as absent
