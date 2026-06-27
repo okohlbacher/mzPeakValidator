@@ -63,7 +63,7 @@
             "c0": { "type": "number" },
             "c1": { "type": "number" },
             "per_spectrum_columns": { "type": "array", "items": { "type": "string" } },
-            "calibrations": { "type": "array", "items": { "type": "object" } },
+            "calibrations": { "type": "object", "description": "Map of calibration-id to its calibration coefficients, selected per spectrum by tof_calibration_id.", "additionalProperties": { "type": "object" } },
             "max_roundtrip_ppm": { "type": "number" }
           }
         },
@@ -107,6 +107,7 @@
     "file": {
       "type": "object",
       "description": "A single file in the mzPeak archive of a certain type",
+      "required": ["name", "entity_type", "data_kind"],
       "properties": {
         "name": {
           "type": "string",

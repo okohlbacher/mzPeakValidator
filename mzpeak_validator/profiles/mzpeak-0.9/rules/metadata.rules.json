@@ -52,6 +52,10 @@
 
     {"id": "array_index_peaks_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
      "doc": "spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json.",
-     "params": {"file": "spectra_peaks", "footer_key": "spectrum_array_index", "schema": "array_index"}}
+     "params": {"file": "spectra_peaks", "footer_key": "spectrum_array_index", "schema": "array_index"}},
+
+    {"id": "array_index_chromatograms_valid", "primitive": "json_schema", "severity": "error", "recovery": "none",
+     "doc": "chromatograms_data footer 'chromatogram_array_index' conforms to schema/json/array_index.json. No-ops on archives without chromatograms_data.",
+     "params": {"file": "chromatograms_data", "footer_key": "chromatogram_array_index", "schema": "array_index"}}
   ]
 }

@@ -74,6 +74,10 @@
      "doc": "spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
      "params": {"file": "spectra_metadata", "column": "spectrum.index"}},
 
+    {"id": "chromatogram_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
+     "doc": "chromatogram.index is 0-based contiguous (0..k-1) over its non-null entries. The chromatogram analog of spectrum_index_contiguous; no-ops on archives without chromatograms_metadata.",
+     "params": {"file": "chromatograms_metadata", "column": "chromatogram.index"}},
+
     {"id": "precursor_source_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
      "doc": "precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from.",
      "params": {"file": "spectra_metadata", "column": "precursor.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},

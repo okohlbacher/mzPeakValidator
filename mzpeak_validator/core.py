@@ -71,7 +71,16 @@ class Archive:
                     z.extractall(self._tmp)
                 self.root = Path(self._tmp)
             idx = self.root / "mzpeak_index.json"
-            self.index = json.loads(idx.read_text()) if idx.exists() else None
+            self._index_utf8_error = False
+            if idx.exists():
+                raw = idx.read_bytes()
+                try:
+                    self.index = json.loads(raw.decode("utf-8"))
+                except UnicodeDecodeError:
+                    self._index_utf8_error = True
+                    self.index = json.loads(raw.decode("utf-8", errors="replace"))
+            else:
+                self.index = None
         except BaseException:
             self.cleanup()
             raise
@@ -317,6 +326,8 @@ def _imaging(ar):
     return ar.has_file("spectra_metadata") and any("IMS_1000050" in k for k in ar.fields("spectra_metadata"))
 
 def p_index_files_present(ar, rule, rep, params):
+    if getattr(ar, "_index_utf8_error", False):
+        rep.add(rule, "error", "mzpeak_index.json is not valid UTF-8 (spec requires UTF-8 serialisation)")
     if not ar.index:
         rep.add(rule, "error", "mzpeak_index.json missing or unreadable"); return
     files = ar.index.get("files")
