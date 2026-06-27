@@ -10,4 +10,8 @@ from .core import (run, main, Archive, Profile, Report, resolve_profile,
 
 __all__ = ["run", "main", "Archive", "Profile", "Report", "resolve_profile",
            "PRIMITIVES", "CATALOG_VERSION", "PROFILES_ROOT", "__version__"]
-__version__ = "0.1.0"
+try:
+    from importlib.metadata import version as _v
+    __version__ = _v("mzpeak-validator")
+except Exception:
+    __version__ = "0.9.1"

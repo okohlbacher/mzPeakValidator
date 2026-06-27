@@ -93,7 +93,7 @@ _CV_LIST = [   # CVs the fixtures use; versions match the profile's pinned snaps
     {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
     {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}]
 
-def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None):
+def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None):
     if os.path.isdir(d): shutil.rmtree(d)
     os.makedirs(d)
     pq.write_table(meta, f"{d}/spectra_metadata.parquet")
@@ -107,6 +107,7 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
                 "cv_list": _CV_LIST if cv_list is None else cv_list,
                 "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
     if imaging is not None: metadata["imaging"] = imaging
+    if extra_metadata: metadata.update(extra_metadata)
     json.dump({"files": files + (extra_files or []), "metadata": metadata},
               open(f"{d}/mzpeak_index.json", "w"), indent=1)
 
@@ -234,6 +235,20 @@ def build_all(out_root):
     case("pass", "imaging_image_not_tiff", imeta, idata, "PASS", warn="image_tiff_magic",
          imaging={**img, "images": [_image_entry(payload=NOT_TIFF_BYTES)]},
          members={"images/image_0000.tiff": NOT_TIFF_BYTES})                                            # bytes match hash; only magic trips
+
+    # Offline $ref regression: index with a valid file_description block (which contains $refs to
+    # param.json) must PASS index_schema_valid — confirms the offline $ref registry works end-to-end.
+    _valid_fd = {"contents": [{"accession": "MS:1000580", "name": "MSn spectrum"}],
+                 "source_files": [{"id": "f1", "name": "raw.raw", "location": "file:///data/raw.raw",
+                                   "parameters": [{"accession": "MS:1000563", "name": "Thermo RAW format"}]}]}
+    case("pass", "index_file_description_valid", _meta(), _data(S, MZ, IN), "PASS",
+         extra_metadata={"file_description": _valid_fd})
+
+    # Offline $ref regression (fail): file_description.contents is an int, not an array -> schema error.
+    _bad_fd = {"contents": 42, "source_files": []}
+    case("fail", "index_file_description_bad", _meta(), _data(S, MZ, IN), "FAIL", "index_schema_valid",
+         extra_metadata={"file_description": _bad_fd})
+
     return cases
 
 if __name__ == "__main__":

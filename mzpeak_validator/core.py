@@ -29,6 +29,21 @@ except Exception as e:                                          # pragma: no cov
     print("ERROR: pyarrow and numpy are required (pip install pyarrow numpy):", e, file=sys.stderr)
     sys.exit(2)
 
+# Build an offline JSON-Schema validator with a $ref store.
+# jsonschema 4.18+ replaced RefResolver with the `referencing` library;
+# support both so the code runs on jsonschema 3–4+.
+try:
+    import referencing as _ref, referencing.jsonschema as _rjsc
+    def _schema_validator(schema, store):
+        resources = [(u, _rjsc.DRAFT7.create_resource(s)) for u, s in store.items()]
+        return __import__("jsonschema").Draft7Validator(
+            schema, registry=_ref.Registry().with_resources(resources))
+except ImportError:                                             # jsonschema < 4.18
+    def _schema_validator(schema, store):
+        import jsonschema
+        return jsonschema.Draft7Validator(
+            schema, resolver=jsonschema.RefResolver("", schema, store=store))
+
 CATALOG_VERSION = "1.10"         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
@@ -219,6 +234,10 @@ class Profile:
         if jdir.is_dir():
             for jf in sorted(jdir.glob("*.json")):
                 self.json_schemas[jf.stem] = json.loads(jf.read_text())
+        # Map remote HUPO-PSI schema URLs to local bundled copies so $ref resolution
+        # works offline with any jsonschema version (see _schema_validator).
+        _base = "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/"
+        self._json_schema_store = {_base + stem + ".json": s for stem, s in self.json_schemas.items()}
         self.cv = self._load_cv()                 # also sets self.cv_isa (is_a graph)
         self.mappings = {art["path"]: json.loads((self.root / art["path"]).read_text())
                          for art in self.manifest.get("artifacts", []) if art.get("role") == "cv_mapping"}
@@ -405,10 +424,12 @@ def p_json_schema(ar, rule, rep, params):
         rep.add(rule, "error", f"{where}: not valid JSON ({doc[1]})", {"file": params.get('file', '')}); return
     try:
         import jsonschema
-        validator = jsonschema.Draft7Validator(schema)
+        store = params.get("_schema_store", {})
+        validator = _schema_validator(schema, store)
         errs = sorted(validator.iter_errors(doc), key=lambda e: list(e.path))
-    except Exception as e:                       # pragma: no cover - jsonschema absent/broken
-        rep.add(rule, "warning", f"{where}: could not run JSON-Schema validation ({type(e).__name__}: {e})"); return
+    except Exception as e:                       # broken profile bundle — treat as engine error
+        rep.add(rule, "error", f"{where}: JSON-Schema validation failed ({type(e).__name__}: {e})",
+                {"file": params.get('file', '')}); return
     sev = rule.get("severity", "error")
     for e in errs:
         loc = "/".join(str(p) for p in e.path) or "(root)"
@@ -429,7 +450,7 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     # PASEF precursor), not the spectrum count. If count_column (a facet primary key) is given,
     # count its non-null entries; the spectrum count is one per populated spectrum facet row.
     col = params.get("count_column")
-    if col and has(ar, f, col):
+    if col and has(ar, f, col) and not params.get("_quick"):
         c = ar.column(f, col)
         actual, what = len(c) - c.null_count, f"non-null {col}"
     else:
@@ -1074,6 +1095,9 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
                 params["_columns"] = prof.columns.get(params.get("file"))
             elif prim == "json_schema":
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
+                params["_schema_store"] = prof._json_schema_store
+            elif prim == "footer_count_equals_rows":
+                params["_quick"] = quick
             elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
