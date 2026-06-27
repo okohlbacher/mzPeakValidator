@@ -67,6 +67,7 @@ except ImportError:                                             # jsonschema < 4
 CATALOG_VERSION = "1.10"         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
+BATCH_SIZE = 1 << 17                    # 131072 rows/batch for streaming reads; ~1 MB per scalar column per batch
 
 # ------------------------------------------------------------------------ archive
 class Archive:
@@ -174,14 +175,34 @@ class Archive:
         return out
 
     def column(self, name, dotted):
-        """Load a (<= 2-level) column as a flat pyarrow Array, cached."""
+        """Load a (<= 2-level) column as a flat pyarrow Array, cached.
+        Top-level struct is cached under (name, top) so multiple sub-field accesses
+        (e.g. chunk.mz_chunk_start then chunk.intensity_chunk_start) read the file once."""
         if (name, dotted) not in self._col:
             top = dotted.split(".", 1)[0]
-            col = pq.read_table(self.root / self._fname(name), columns=[top]).column(top).combine_chunks()
-            if "." in dotted:
-                col = col.field(dotted.split(".", 1)[1])
-            self._col[(name, dotted)] = col
+            top_key = (name, top)
+            if top_key not in self._col:
+                self._col[top_key] = pq.read_table(
+                    self.root / self._fname(name), columns=[top]
+                ).column(top).combine_chunks()
+            col = self._col[top_key]
+            self._col[(name, dotted)] = col.field(dotted.split(".", 1)[1]) if "." in dotted else col
         return self._col[(name, dotted)]
+
+    def iter_batches(self, name, *dotted_cols, batch_size=None):
+        """Stream the requested columns as fixed-size row batches without caching.
+        Each yield is a tuple of pyarrow Arrays, one per requested dotted column.
+        Passes dotted paths directly to PyArrow so only the requested struct sub-fields
+        are read — unused sub-fields (e.g. point.intensity, chunk.mz_chunk_list) are skipped."""
+        if not dotted_cols:
+            return
+        for batch in self.pf(name).iter_batches(
+                batch_size=batch_size or BATCH_SIZE, columns=list(dotted_cols)):
+            yield tuple(
+                batch.column(d.split(".", 1)[0]).field(d.split(".", 1)[1])
+                if "." in d else batch.column(d)
+                for d in dotted_cols
+            )
 
 def arrow_logical(tystr):
     s = tystr.lower()
@@ -466,11 +487,15 @@ def p_json_schema(ar, rule, rep, params):
         loc = "/".join(str(p) for p in e.path) or "(root)"
         rep.add(rule, sev, f"{where}: schema violation at {loc}: {e.message}",
                 {"file": params.get("file", ""), "column": loc})
-    # buffer_format_uniform: all entries must share the same buffer_format (point layout is all-or-nothing)
+    # buffer_format_uniform: point layout is all-or-nothing; chunk layout intentionally has
+    # multiple buffer_format values (chunk_start, chunk_end, chunk_values, …) — only flag
+    # when the mix is incoherent (e.g. point mixed with chunk, or unknown formats).
     if params.get("buffer_format_uniform") and isinstance(doc, dict):
         entries = doc.get("entries") or []
         fmts = {e.get("buffer_format") for e in entries if isinstance(e, dict) and e.get("buffer_format")}
-        if len(fmts) > 1:
+        _chunk_fmts = {"chunk_encoding", "chunk_end", "chunk_secondary",
+                       "chunk_start", "chunk_transform", "chunk_values"}
+        if len(fmts) > 1 and not fmts.issubset(_chunk_fmts):
             rep.add(rule, sev, f"{where}: mixed buffer_format {sorted(fmts)} — point layout is all-or-nothing",
                     {"file": params.get("file", "")})
     # cv_parents: check entries[*].field values are OBO descendants of a required parent term
@@ -501,8 +526,9 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     # count its non-null entries; the spectrum count is one per populated spectrum facet row.
     col = params.get("count_column")
     if col and has(ar, f, col) and not params.get("_quick"):
-        c = ar.column(f, col)
-        actual, what = len(c) - c.null_count, f"non-null {col}"
+        # Stream to count non-nulls; avoids loading the full column into RAM.
+        nonnull = sum(len(arr) - arr.null_count for (arr,) in ar.iter_batches(f, col))
+        actual, what = nonnull, f"non-null {col}"
     else:
         actual, what = ar.num_rows(f), "parquet rows"
     if iv != actual:
@@ -512,25 +538,34 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
 def p_column_predicate(ar, rule, rep, params):
     f, col = params["file"], params["column"]
     if not has(ar, f, col): return
-    op, arr = params["op"], ar.column(f, col)
-    if op == "finite":                                       # nulls (null-marking) are fine; NaN/inf VALUES are not
-        ok, desc = pc.fill_null(pc.is_finite(arr), True), "non-finite (NaN/inf)"
+    op = params["op"]
+    if op == "finite":
+        desc = "non-finite (NaN/inf)"
+        check = lambda arr: pc.fill_null(pc.is_finite(arr), True)
     else:
         fn = {"ge": pc.greater_equal, "gt": pc.greater, "le": pc.less_equal, "lt": pc.less}[op]
-        ok, desc = pc.fill_null(fn(arr, params.get("value")), True), f"fail {op} {params.get('value')}"
-    badmask = pc.invert(ok)
-    nbad = pc.sum(pc.cast(badmask, pa.int64())).as_py() or 0
+        val = params.get("value")
+        desc = f"fail {op} {val}"
+        check = lambda arr: pc.fill_null(fn(arr, val), True)
+    nbad = 0; first_i = None; first_v = None; offset = 0
+    for (arr,) in ar.iter_batches(f, col):
+        badmask = pc.invert(check(arr))
+        nb = pc.sum(pc.cast(badmask, pa.int64())).as_py() or 0
+        nbad += nb
+        if nb and first_i is None:
+            i = int(np.argmax(badmask.to_numpy(zero_copy_only=False)))
+            first_i = offset + i; first_v = arr[i].as_py()
+        offset += len(arr)
     if nbad:
-        i = int(np.argmax(badmask.to_numpy(zero_copy_only=False)))
         rep.add(rule, rule.get("severity", "error"),
-                f"{f}.{col}: {nbad} of {len(arr)} value(s) {desc}; first at row {i} (value {arr[i].as_py()})",
-                {"file": f, "column": col, "row": i})
+                f"{f}.{col}: {nbad} of {offset} value(s) {desc}; first at row {first_i} (value {first_v})",
+                {"file": f, "column": col, "row": first_i})
 
 def p_dtype_role(ar, rule, rep, params):
     f, col, allowed = params["file"], params["column"], params["allowed"]
     if not has(ar, f, col): return
     role = params.get("role", col.split(".")[-1])
-    actual = str(ar.column(f, col).type)
+    actual = ar.fields(f)[col]              # type already in schema metadata; no column decode needed
     ty = arrow_logical(actual)
     if ty not in allowed:
         rep.add(rule, "error",
@@ -564,60 +599,97 @@ def declared_sorted(ar, file, dotted_col):
 def p_grouped_monotonic(ar, rule, rep, params):
     f, grp, col = params["file"], params["group"], params["column"]
     if not (has(ar, f, grp) and has(ar, f, col)): return
-    # Gate on the declared order: the spec only asserts ascending m/z when the array index gives the
-    # column a sorting_rank. A column explicitly declared unsorted is conformant as-is (don't flag).
     if declared_sorted(ar, f, col) is False:
         rep.add(rule, "info", f"{f}.{col}: array index declares it unsorted (sorting_rank null/absent); "
                 f"monotonicity not enforced", {"file": f, "column": col})
         return
-    vcol = ar.column(f, col)
-    gcol = ar.column(f, grp)
-    # Keep an integer group key exact: to_numpy() on a null-containing int column yields float64,
-    # collapsing distinct ids near/above 2^53 into one group. Cast through Arrow instead.
-    g = (pc.fill_null(gcol.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
-         if pa.types.is_integer(gcol.type) else gcol.to_numpy(zero_copy_only=False))
-    v = vcol.to_numpy(zero_copy_only=False)
-    null = pc.is_null(vcol).to_numpy(zero_copy_only=False)    # Arrow nulls are legitimate (null-marking) -> skip
-    if len(v) < 2: return
-    order = np.argsort(g, kind="stable")                     # group rows together regardless of physical order
-    gs, vs, ns = g[order], v[order], null[order]
-    both = ~ns[1:] & ~ns[:-1]                                # only compare consecutive non-null pairs
-    bad = (gs[1:] == gs[:-1]) & both & (vs[1:] < vs[:-1])
-    if bad.any():
-        j = int(np.argmax(bad))
-        row, prev, cur = int(order[j + 1]), vs[j], vs[j + 1]
-        gid = gs[j]
-        rep.add(rule, rule.get("severity", "error"),
-                f"{f}.{col} not {params['direction']} within {grp}: {int(bad.sum())} inversion(s); "
-                f"in {grp}={gid}, value {cur} (row {row}) < previous {prev}", {"file": f, "row": row}, recovery="reorder_pair")
+    sev = rule.get("severity", "error")
+    # Vectorised streaming.  Cross-batch boundary: last[g] dict, O(unique_groups) Python ops.
+    # Within-batch: numpy consecutive-pair check after an optional lexsort.
+    # Hybrid: skip sort when groups are already contiguous (typical real data — 500M rows/s);
+    # fall through to lexsort only when interleaving is detected (adversarial files).
+    last = {}; nbad = 0; first_bad = None; offset = 0
+    for gcol, vcol in ar.iter_batches(f, grp, col):
+        null_g = pc.is_null(gcol).to_numpy(zero_copy_only=False)
+        null_v = pc.is_null(vcol).to_numpy(zero_copy_only=False)
+        valid  = ~null_g & ~null_v
+        if not np.any(valid):
+            offset += len(gcol); continue
+        gv = (gcol.cast(pa.int64(), safe=False).to_numpy(zero_copy_only=False)
+              if pa.types.is_integer(gcol.type) else gcol.to_numpy(zero_copy_only=False))
+        v  = vcol.to_numpy(zero_copy_only=False)
+        vg = gv[valid]; vv = v[valid]; vidx = np.where(valid)[0]; n = len(vg)
+        # Cross-batch: first physical row per group vs last batch's final value
+        unique_g, first_phys = np.unique(vg, return_index=True)
+        for fi, g in zip(first_phys.tolist(), unique_g.tolist()):
+            prev = last.get(g)
+            if prev is not None and vv[fi] < prev:
+                nbad += 1
+                if first_bad is None:
+                    first_bad = (offset + int(vidx[fi]), g, float(prev), float(vv[fi]))
+        # Within-batch: consecutive same-group pairs; sort only when groups interleave
+        if n > 1:
+            if np.any(np.diff(vg) < 0):       # interleaved → sort by (group, row_index)
+                si = np.lexsort((vidx, vg)); sg = vg[si]; sv = vv[si]; svidx = vidx[si]
+            else:                              # already contiguous — no sort needed
+                sg = vg; sv = vv; svidx = vidx
+            same = sg[1:] == sg[:-1]; inv = same & (sv[1:] < sv[:-1])
+            if np.any(inv):
+                nbad += int(np.sum(inv))
+                if first_bad is None:
+                    pi = int(np.argmax(inv))
+                    first_bad = (offset + int(svidx[pi + 1]),
+                                 int(sg[pi + 1]), float(sv[pi]), float(sv[pi + 1]))
+        # Update last: last physical row value per group
+        _, last_rev = np.unique(vg[::-1], return_index=True)
+        for li in (n - 1 - last_rev).tolist():
+            last[int(vg[li])] = float(vv[li])
+        offset += len(gcol)
+    if first_bad:
+        row, gid, prev, cur = first_bad
+        rep.add(rule, sev,
+                f"{f}.{col} not {params['direction']} within {grp}: {nbad} inversion(s); "
+                f"in {grp}={gid}, value {cur} (row {row}) < previous {prev}",
+                {"file": f, "row": row}, recovery="reorder_pair")
 
 def p_foreign_key(ar, rule, rep, params):
     f, col, rf, rc = params["file"], params["column"], params["ref_file"], params["ref_column"]
     if not (has(ar, f, col) and has(ar, rf, rc)): return
+    # Ref (parent) is always a metadata file — small enough to load fully.
     parent = {x for x in ar.column(rf, rc).to_pylist() if x is not None}
-    child = ar.column(f, col)
-    missing = [x for x in pc.unique(child).to_pylist() if x is not None and x not in parent]
-    # allow_null: in the packed parallel-facet layout a facet key is legitimately null on rows
-    # belonging to another facet (e.g. scan.source_index is null on precursor-only PASEF rows).
-    flag_null = child.null_count and not params.get("allow_null", False)
+    # Stream child (may be a large data file) to accumulate unique values and null presence.
+    child_unique = set(); has_null = False
+    for (arr,) in ar.iter_batches(f, col):
+        for v in pc.unique(arr).to_pylist():
+            if v is None: has_null = True
+            else: child_unique.add(v)
+    missing = [x for x in child_unique if x not in parent]
+    flag_null = has_null and not params.get("allow_null", False)
     if missing or flag_null:
         parts = []
         if missing: parts.append(f"{len(missing)} value(s) with no {rf}.{rc} (e.g. {missing[:3]})")
-        if flag_null: parts.append(f"{child.null_count} null")
+        if flag_null: parts.append("null values present")
         rep.add(rule, rule.get("severity", "error"), f"{f}.{col}: " + "; ".join(parts), {"file": f, "column": col})
 
 def p_index_contiguous(ar, rule, rep, params):
     f, col = params["file"], params["column"]
     if not has(ar, f, col): return
-    # ignore nulls: in the packed parallel-facet layout the spectrum facet only populates a subset
-    # of rows; its index over those non-null rows must still be 0-based contiguous.
-    v = pc.drop_null(ar.column(f, col)).to_numpy(zero_copy_only=False)
-    expect = np.arange(len(v), dtype=np.int64)
-    if len(v) and not np.array_equal(v.astype(np.int64), expect):
-        i = int(np.argmax(v.astype(np.int64) != expect))
-        rep.add(rule, rule.get("severity", "warning"),
-                f"{f}.{col} not 0-based contiguous (len {len(v)} non-null): position {i} is {v[i]}, expected {i}",
-                {"file": f, "column": col, "row": i})
+    # Ignore nulls: packed facet layout populates only a subset of rows per facet.
+    # Stream batches tracking the running expected index.
+    expected = 0; total_nonnull = 0
+    for (arr,) in ar.iter_batches(f, col):
+        v = pc.drop_null(arr).to_numpy(zero_copy_only=False).astype(np.int64)
+        if len(v) == 0: continue
+        exp = np.arange(expected, expected + len(v), dtype=np.int64)
+        if not np.array_equal(v, exp):
+            i = int(np.argmax(v != exp))
+            abs_pos = expected + i
+            rep.add(rule, rule.get("severity", "warning"),
+                    f"{f}.{col} not 0-based contiguous (len {total_nonnull + len(v)} non-null): "
+                    f"position {abs_pos} is {v[i]}, expected {abs_pos}",
+                    {"file": f, "column": col, "row": abs_pos})
+            return
+        expected += len(v); total_nonnull += len(v)
 
 UNIT = re.compile(r"_unit_([A-Za-z]+)_(\d+)")
 
@@ -693,8 +765,9 @@ def p_count_sum_equals_rows(ar, rule, rep, params):
     f, cnt_file, cnt_col = params["file"], params.get("count_file", "spectra_metadata"), params["count_column"]
     if not (has(ar, f, params.get("guard", "point.intensity")) and has(ar, cnt_file, cnt_col)):
         return
-    # null counts are treated as 0: a centroid spectrum has no profile points (its data lives in spectra_peaks)
-    total = pc.sum(ar.column(cnt_file, cnt_col)).as_py() or 0
+    # null counts are 0 (centroid spectra have no profile points; data lives in spectra_peaks).
+    # Stream the count column to avoid holding it in RAM.
+    total = sum((pc.sum(arr).as_py() or 0) for (arr,) in ar.iter_batches(cnt_file, cnt_col))
     if int(total) != ar.num_rows(f):
         rep.add(rule, rule.get("severity", "error"), f"{f}: sum({cnt_col})={total} != {f} rows={ar.num_rows(f)}",
                 {"file": f}, recovery="rederive")
@@ -704,19 +777,23 @@ def p_grouped_count_equals(ar, rule, rep, params):
     spectrum's declared count. Stronger than count_sum_equals_rows (catches localized/swapped
     corruption that a global sum hides). Null declared count is treated as 0 (centroid spectra have
     no profile points; their data lives in spectra_peaks)."""
-    f, grp = params["file"], params["group"]                      # signal table + its group column (point.spectrum_index)
+    f, grp = params["file"], params["group"]
     cf, cc = params.get("count_file", "spectra_metadata"), params["count_column"]
     key = params.get("key_column", "spectrum.index")
     if not (has(ar, f, params.get("guard", grp)) and has(ar, cf, cc) and has(ar, cf, key)):
         return
-    g = ar.column(f, grp)
-    gmask = ~pc.is_null(g).to_numpy(zero_copy_only=False)        # signal rows have non-null group ids
-    # keep integer ids exact: to_numpy() on a null-containing int column yields float64, collapsing
-    # distinct ids >= 2^53. Cast through Arrow (here and for the key column) before counting.
-    gall = (pc.fill_null(g.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
-            if pa.types.is_integer(g.type) else g.to_numpy(zero_copy_only=False))
-    actual_ids, actual_cnt = np.unique(gall[gmask], return_counts=True)
-    actual = dict(zip(actual_ids.tolist(), actual_cnt.tolist()))
+    # Stream the (potentially large) data-file group column; build actual count dict per batch.
+    actual = {}
+    for (gcol,) in ar.iter_batches(f, grp):
+        if pa.types.is_integer(gcol.type):
+            gv = pc.fill_null(gcol.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+        else:
+            gv = gcol.to_numpy(zero_copy_only=False)
+        null = pc.is_null(gcol).to_numpy(zero_copy_only=False)
+        ids, cnts = np.unique(gv[~null], return_counts=True)
+        for gid, cnt in zip(ids.tolist(), cnts.tolist()):
+            actual[gid] = actual.get(gid, 0) + cnt
+    # Metadata side (spectra_metadata) is small — load fully.
     kcol = ar.column(cf, key); ccol = ar.column(cf, cc)
     kv = (pc.fill_null(kcol.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
           if pa.types.is_integer(kcol.type) else kcol.to_numpy(zero_copy_only=False))
@@ -725,8 +802,7 @@ def p_grouped_count_equals(ar, rule, rep, params):
     cnull = pc.is_null(ccol).to_numpy(zero_copy_only=False)
     bad = 0; first = None
     for i in range(len(kv)):
-        if knull[i]:
-            continue                                              # padding row of a packed facet
+        if knull[i]: continue
         sid = int(kv[i])
         declared = 0 if cnull[i] else int(cvv[i])
         got = int(actual.get(sid, 0))
@@ -762,11 +838,18 @@ def p_imaging_coordinates(ar, rule, rep, params):
     has_y = any(k.endswith("IMS_1000051_position_y") for k in fields)
     if not (has_x and has_y):
         rep.add(rule, sev, "imaging archive missing position_x and/or position_y column", {"file": f}); return
-    for path in [k for k in fields if k.endswith(("IMS_1000050_position_x", "IMS_1000051_position_y"))]:
-        v = ar.column(f, path).to_numpy(zero_copy_only=False)
-        finite = v[np.isfinite(v)]                            # nulls -> NaN; ignore them (np.nanmin would warn on all-null)
-        if len(finite) and finite.min() < 1:
-            rep.add(rule, sev, f"{f}.{path}: minimum coordinate {finite.min():g} < 1 "
+    coord_cols = [k for k in fields if k.endswith(("IMS_1000050_position_x", "IMS_1000051_position_y"))]
+    # Stream each coordinate column and track the running minimum finite value.
+    for path in coord_cols:
+        col_min = None
+        for (arr,) in ar.iter_batches(f, path):
+            v = arr.to_numpy(zero_copy_only=False)
+            finite = v[np.isfinite(v)]
+            if len(finite):
+                b = float(finite.min())
+                if col_min is None or b < col_min: col_min = b
+        if col_min is not None and col_min < 1:
+            rep.add(rule, sev, f"{f}.{path}: minimum coordinate {col_min:g} < 1 "
                     f"(imaging coordinates must be 1-based)", {"file": f, "column": path})
 
 # --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
@@ -1026,25 +1109,40 @@ def p_chunk_bounds(ar, rule, rep, params):
     if not (has(ar, f, grp) and has(ar, f, sc) and has(ar, f, ec)):
         return
     sev = rule.get("severity", "error")
-    g, s, e = ar.column(f, grp), ar.column(f, sc), ar.column(f, ec)
-    gv = (pc.fill_null(g.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
-          if pa.types.is_integer(g.type) else g.to_numpy(zero_copy_only=False))
-    sv, ev = s.to_numpy(zero_copy_only=False), e.to_numpy(zero_copy_only=False)
-    snull = pc.is_null(s).to_numpy(zero_copy_only=False)
-    if len(gv) == 0:
-        return
-    badvb = (~snull) & ~pc.is_null(e).to_numpy(zero_copy_only=False) & (sv > ev)
-    if badvb.any():
-        i = int(np.argmax(badvb))
-        rep.add(rule, sev, f"{f}: chunk start > end at row {i} ({sv[i]:g} > {ev[i]:g}) in {grp.split('.')[-1]}={gv[i]}",
-                {"file": f, "row": i})
-    order = np.argsort(gv, kind="stable")                 # group rows together, preserving physical order within a group
-    go, so, eo, no = gv[order], sv[order], ev[order], snull[order]
-    overlap = (go[1:] == go[:-1]) & ~no[1:] & ~no[:-1] & (so[1:] < eo[:-1])
-    if overlap.any():
-        j = int(np.argmax(overlap))
-        rep.add(rule, sev, f"{f}: overlapping/non-ascending chunks in {grp.split('.')[-1]}={go[j]}: "
-                f"chunk start {so[j+1]:g} < previous end {eo[j]:g}", {"file": f, "row": int(order[j + 1])},
+    # Stream batches; track last (end_val, row) per group for overlap detection.
+    # last_end[g_id] = (end_value, absolute_row) for the most recent chunk in that group.
+    last_end = {}; offset = 0
+    start_gt_end = None; overlap_found = None
+    for gcol, scol, ecol in ar.iter_batches(f, grp, sc, ec):
+        gv = (pc.fill_null(gcol.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+              if pa.types.is_integer(gcol.type) else gcol.to_numpy(zero_copy_only=False))
+        sv   = scol.to_numpy(zero_copy_only=False)
+        ev   = ecol.to_numpy(zero_copy_only=False)
+        snull = pc.is_null(scol).to_numpy(zero_copy_only=False)
+        enull = pc.is_null(ecol).to_numpy(zero_copy_only=False)
+        for i in range(len(gv)):
+            if snull[i] or enull[i]: continue
+            g = int(gv[i]); s_val = float(sv[i]); e_val = float(ev[i])
+            abs_row = offset + i
+            # start > end check
+            if start_gt_end is None and s_val > e_val:
+                start_gt_end = (abs_row, s_val, e_val, g)
+            # overlap check against previous chunk in same group
+            prev = last_end.get(g)
+            if prev is not None and overlap_found is None and s_val < prev[0]:
+                overlap_found = (abs_row, g, s_val, prev[0])
+            last_end[g] = (e_val, abs_row)
+        offset += len(gv)
+    if start_gt_end:
+        row, s, e, g = start_gt_end
+        grp_name = grp.split(".")[-1]
+        rep.add(rule, sev, f"{f}: chunk start > end at row {row} ({s:g} > {e:g}) in {grp_name}={g}",
+                {"file": f, "row": row})
+    if overlap_found:
+        row, g, s_val, prev_end = overlap_found
+        grp_name = grp.split(".")[-1]
+        rep.add(rule, sev, f"{f}: overlapping/non-ascending chunks in {grp_name}={g}: "
+                f"chunk start {s_val:g} < previous end {prev_end:g}", {"file": f, "row": row},
                 recovery="reorder_pair")
 
 def p_aux_arrays(ar, rule, rep, params):
@@ -1054,19 +1152,19 @@ def p_aux_arrays(ar, rule, rep, params):
     if not (has(ar, f, cc) and has(ar, f, lc)):
         return
     sev = rule.get("severity", "error")
-    cnt, lst = ar.column(f, cc), ar.column(f, lc)
-    cntv = cnt.to_numpy(zero_copy_only=False)
-    cnull = pc.is_null(cnt).to_numpy(zero_copy_only=False)
-    lens = pc.list_value_length(lst).to_numpy(zero_copy_only=False)
-    lnull = pc.is_null(lst).to_numpy(zero_copy_only=False)
-    bad, first = 0, None
-    for i in range(len(cntv)):
-        declared = 0 if cnull[i] else int(cntv[i])
-        actual = 0 if lnull[i] else int(lens[i])
-        if declared != actual:
-            bad += 1
-            if first is None:
-                first = (i, declared, actual)
+    bad = 0; first = None; offset = 0
+    for cnt, lst in ar.iter_batches(f, cc, lc):
+        cntv  = cnt.to_numpy(zero_copy_only=False)
+        cnull = pc.is_null(cnt).to_numpy(zero_copy_only=False)
+        lens  = pc.list_value_length(lst).to_numpy(zero_copy_only=False)
+        lnull = pc.is_null(lst).to_numpy(zero_copy_only=False)
+        for i in range(len(cntv)):
+            declared = 0 if cnull[i] else int(cntv[i])
+            actual   = 0 if lnull[i] else int(lens[i])
+            if declared != actual:
+                bad += 1
+                if first is None: first = (offset + i, declared, actual)
+        offset += len(cntv)
     if bad:
         i, d, a = first
         rep.add(rule, sev, f"{f}: number_of_auxiliary_arrays mismatch in {bad} row(s); row {i} declares "
