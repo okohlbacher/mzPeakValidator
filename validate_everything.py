@@ -3,9 +3,9 @@
 validate_everything.py — full-corpus mzPeak validation at maximum sensitivity.
 
 WHAT IT DOES
-  Scans  ~/Claude/mzML2mzPeak/data/**/*.mzpeak  (recursively), runs the validator
+  Scans  ~/Claude/mzPeak/data/**/*.mzpeak  (recursively), runs the validator
   on EVERY file at FULL sensitivity (never --quick — all DATA_SCAN primitives run),
-  then writes two artifacts into  ~/Claude/mzML2mzPeak/data/validator_logs/ :
+  then writes two artifacts into  ~/Claude/mzPeak/data/validator_logs/ :
 
     1. run-<START>.log         — live progress log; tail -f it to monitor.
     2. validation-<END>.md     — the handover report, stamped with the date+time
@@ -33,8 +33,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict, Counter
 from datetime import datetime
 
-DEFAULT_DATA_ROOT = os.path.expanduser("~/Claude/mzML2mzPeak/data")
-DEFAULT_OUT_DIR   = os.path.expanduser("~/Claude/mzML2mzPeak/data/validator_logs")
+DEFAULT_DATA_ROOT = os.path.expanduser("~/Claude/mzPeak/data")
+DEFAULT_OUT_DIR   = os.path.expanduser("~/Claude/mzPeak/data/validator_logs")
 VALIDATOR_REPO    = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -45,11 +45,11 @@ def human_bytes(n):
         n /= 1024.0
 
 
-def enumerate_corpus(data_root):
+def enumerate_corpus(data_root, out_dir=None):
+    out_abs = os.path.abspath(out_dir or DEFAULT_OUT_DIR)
     files = []
     for dirpath, _, fnames in os.walk(data_root):
-        # never descend into our own output dir
-        if os.path.abspath(dirpath).startswith(os.path.abspath(DEFAULT_OUT_DIR)):
+        if os.path.abspath(dirpath).startswith(out_abs):
             continue
         for fn in fnames:
             if fn.endswith(".mzpeak"):
@@ -266,7 +266,7 @@ def main():
     start_stamp = start_dt.strftime("%Y-%m-%d-%H%M%S")
     log_path = os.path.join(args.out_dir, f"run-{start_stamp}.log")
 
-    files = enumerate_corpus(args.data_root)
+    files = enumerate_corpus(args.data_root, args.out_dir)
     total = len(files)
 
     log_lock = threading.Lock()

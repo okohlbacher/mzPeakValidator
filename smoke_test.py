@@ -15,13 +15,17 @@ sys.path.insert(0, HERE)
 from mzpeak_validator import run
 import make_fixtures
 
-def corpus_dirs():
+def corpus_files():
     env = os.environ.get("MZPEAK_CORPUS")
-    if env:
-        return [p for p in env.split(os.pathsep) if p]
-    # convenience default: example data from the sibling imzML2mzPeak project, if present
-    base = os.path.expanduser("~/Claude/imzML2mzPeak/data")
-    return [os.path.join(base, "imzml-examples"), os.path.join(base, "mzml-examples")]
+    roots = [p for p in env.split(os.pathsep) if p] if env else \
+            [os.path.expanduser("~/Claude/mzPeak/data")]
+    found = []
+    for root in roots:
+        for dirpath, _, fnames in os.walk(root):
+            for fn in sorted(fnames):
+                if fn.endswith(".mzpeak"):
+                    found.append(os.path.join(dirpath, fn))
+    return sorted(found)
 
 def err_rules(rep):
     return [f["ruleId"] for f in rep["findings"] if f["level"] == "error"]
@@ -54,10 +58,7 @@ def main():
         shutil.rmtree(tmp, ignore_errors=True)
 
     print("\n== real .mzpeak corpus ==")
-    found = []
-    for r in corpus_dirs():
-        found += sorted(glob.glob(os.path.join(r, "*.mzpeak")))
-        found += [d for d in sorted(glob.glob(os.path.join(r, "*.mzpeak/"))) if os.path.isdir(d)]
+    found = corpus_files()
     if not found:
         print("  (none found; set MZPEAK_CORPUS to a dir of .mzpeak files)")
     for a in found:

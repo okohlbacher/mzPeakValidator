@@ -84,7 +84,7 @@ Verified against the reference `.mzpeak` files and the converted corpus.
 - **Commit/push only when asked.** `gh` is authenticated as `okohlbacher`; default branch `main`.
 - **PUSH ALLOWLIST — hard rule.** The ONLY remote you may `git push` to is **`github.com/okohlbacher/mzPeakValidator`**. **NEVER** push to any other remote (e.g. the sibling `okohlbacher/mzML2mzPeak`, or any fork/upstream) unless the user *explicitly and interactively authorizes that specific push in the moment* — and even then, **warn first** and get confirmation before pushing. A generic "commit and push" applies to **this repo only**; for any other repo, stop and ask. Local commits in another repo may be fine, but the push is gated.
 - Environment: macOS, anaconda **Python 3.7.4**, **pyarrow 12.0.1**, numpy present, pandas 0.25.1 (old → a harmless `UserWarning` on import; ignore).
-- The example `.mzpeak` corpus is **git-ignored** (lives in the sibling repo, below). A fresh clone runs all fixtures self-contained but finds no corpus unless `MZPEAK_CORPUS` is set.
+- The example `.mzpeak` corpus is **git-ignored** and lives at `~/Claude/mzPeak/data/` (the authoritative corpus root; only files under this path are validated). `smoke_test.py` and `validate_everything.py` both default to this root. A fresh clone runs all fixtures self-contained but finds no corpus unless the data directory is present or `MZPEAK_CORPUS` is set.
 
 ## Broader context — the sibling `~/Claude/imzML2mzPeak`
 
