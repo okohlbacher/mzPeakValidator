@@ -17,7 +17,7 @@ Usage (installed console script, or `python -m mzpeak_validator`):
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """
-import argparse, gzip, hashlib, json, re, sys, tempfile, zipfile
+import argparse, gzip, hashlib, json, re, struct, sys, tempfile, zipfile
 from pathlib import Path
 
 try:
@@ -70,13 +70,52 @@ MAX_PER_RULE = 25                       # cap distinct findings per rule, then s
 _SUMMARY_RULE = {"id": "archive_summary", "primitive": "archive_summary", "recovery": "none"}
 BATCH_SIZE = 1 << 17                    # 131072 rows/batch for streaming reads; ~1 MB per scalar column per batch
 
+# ------------------------------------------------------------------ S3 streaming
+class _S3RangeFile:
+    """Seekable file-like view of a STORED ZIP member on S3, backed by S3 range requests.
+    pyarrow's ParquetFile accepts any file-like with read/seek/tell/closed — each call
+    issues a targeted GetObject(Range=…) so the full member is never buffered locally."""
+    def __init__(self, s3, bucket, key, data_offset, data_size):
+        self._s3, self._bucket, self._key = s3, bucket, key
+        self._start, self._size, self._pos = data_offset, data_size, 0
+
+    def read(self, n=-1):
+        if n < 0: n = self._size - self._pos
+        if n <= 0 or self._pos >= self._size: return b""
+        end = min(self._pos + n, self._size)
+        r = f"bytes={self._start + self._pos}-{self._start + end - 1}"
+        data = self._s3.get_object(Bucket=self._bucket, Key=self._key, Range=r)["Body"].read()
+        self._pos += len(data)
+        return data
+
+    def seek(self, pos, whence=0):
+        if whence == 0: self._pos = pos
+        elif whence == 1: self._pos += pos
+        elif whence == 2: self._pos = self._size + pos
+        self._pos = max(0, min(self._pos, self._size))
+        return self._pos
+
+    def tell(self): return self._pos
+    def readable(self): return True
+    def seekable(self): return True
+    def writable(self): return False
+    # pyarrow C++ checks obj.closed via PyObject_GetAttrString; if absent it returns True
+    # and raises "I/O operation on closed file" before reading a single byte.
+    @property
+    def closed(self): return False
+    def close(self): pass
+
 # ------------------------------------------------------------------------ archive
 class Archive:
     """An mzPeak archive (zip or directory) exposing files, parquet schemas and columns."""
     def __init__(self, path):
-        self.path = Path(path)
+        self.path = Path(str(path))
         self._tmp = None
         self._pf, self._col = {}, {}
+        # S3 streaming mode: no local extraction, range requests per member
+        if str(path).startswith("s3://"):
+            self._init_s3(str(path))
+            return
         try:                                          # any failure after mkdtemp must not leak the tempdir
             if self.path.is_dir():
                 self.root = self.path
@@ -107,6 +146,56 @@ class Archive:
             self.cleanup()
             raise
 
+    def _init_s3(self, uri):
+        """Set up S3 streaming mode: enumerate ZIP central directory via remotezip presigned URL,
+        read mzpeak_index.json into memory; Parquet members are accessed via _S3RangeFile."""
+        try:
+            import boto3
+            from remotezip import RemoteZip
+        except ImportError as exc:
+            raise ImportError(
+                f"S3 streaming requires boto3 and remotezip (pip install boto3 remotezip): {exc}"
+            )
+        bucket, _, key = uri[5:].partition("/")
+        s3 = boto3.client("s3")
+        # Presigned URL lets remotezip use HTTP range requests against S3 without AWS credentials
+        # in the HTTP layer. ExpiresIn=43200 (12 h) outlasts any realistic validation run.
+        url = s3.generate_presigned_url(
+            "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=43200)
+        with RemoteZip(url) as rz:
+            self._s3_members = {zi.filename: zi for zi in rz.infolist()}
+            idx_bytes = rz.read("mzpeak_index.json") if "mzpeak_index.json" in self._s3_members else b"null"
+        self._s3 = s3
+        self._s3_bucket = bucket
+        self._s3_key = key
+        self._s3_offsets = {}        # fn -> absolute data offset (lazily filled, one 30-byte GET per file)
+        self.root = None             # sentinel: S3 mode has no local root
+        self._index_utf8_error = False
+        try:
+            self.index = json.loads(idx_bytes.decode("utf-8"))
+        except UnicodeDecodeError:
+            self._index_utf8_error = True
+            self.index = json.loads(idx_bytes.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, ValueError):
+            self.index = None
+
+    def _s3_data_offset(self, fn, zi):
+        """Return the absolute byte offset of member data (after local file header) in the S3 object.
+        Cached after the first call (one 30-byte range request per Parquet file)."""
+        if fn not in self._s3_offsets:
+            start = zi.header_offset
+            raw = self._s3.get_object(
+                Bucket=self._s3_bucket, Key=self._s3_key,
+                Range=f"bytes={start}-{start + 29}"
+            )["Body"].read()
+            if len(raw) < 30:
+                raise ValueError(f"truncated local file header for S3 member {fn!r}")
+            # Local file header: sig(4) ver(2) flags(2) method(2) time(2) date(2)
+            #   crc32(4) comp_size(4) uncomp_size(4) fname_len(2) extra_len(2)
+            fname_len, extra_len = struct.unpack_from("<HH", raw, 26)
+            self._s3_offsets[fn] = start + 30 + fname_len + extra_len
+        return self._s3_offsets[fn]
+
     def cleanup(self):
         if self._tmp:
             import shutil; shutil.rmtree(self._tmp, ignore_errors=True)
@@ -115,6 +204,8 @@ class Archive:
         """Resolve an archive-relative path, refusing escapes (absolute, '..', symlink) — names come
         from the untrusted index, so a member must not be able to address files outside the archive."""
         if not rel:
+            return None
+        if self.root is None:       # S3 mode — trust membership check instead
             return None
         root = self.root.resolve()
         full = (self.root / rel).resolve()
@@ -125,11 +216,17 @@ class Archive:
         return full
 
     def _is_file(self, rel):
+        if self.root is None:       # S3 mode
+            return bool(rel) and rel in self._s3_members
         full = self._contained(rel)
         return full is not None and full.is_file()
 
     def _fname(self, name):
         """Resolve a logical table name to a contained file ('spectra_data' -> 'spectra_data.parquet')."""
+        if self.root is None:       # S3 mode
+            if name in self._s3_members: return name
+            if name + ".parquet" in self._s3_members: return name + ".parquet"
+            return name
         if name.endswith(".parquet") and self._is_file(name):
             return name
         if self._is_file(name + ".parquet"):
@@ -141,10 +238,23 @@ class Archive:
 
     def has_member(self, name):
         """Is `name` a present, archive-contained raw member (not parquet-resolved)?"""
+        if self.root is None:       # S3 mode
+            return name in self._s3_members
         return self._is_file(name)
 
     def read_member(self, name, n=None):
         """Raw bytes of an archive-contained member (first `n` bytes if given)."""
+        if self.root is None:       # S3 mode
+            if name not in self._s3_members:
+                raise ValueError(f"refusing to read member outside the archive: {name!r}")
+            zi = self._s3_members[name]
+            off = self._s3_data_offset(name, zi)
+            resp = self._s3.get_object(
+                Bucket=self._s3_bucket, Key=self._s3_key,
+                Range=f"bytes={off}-{off + zi.file_size - 1}"
+            )
+            data = resp["Body"].read()
+            return data if n is None else data[:n]
         full = self._contained(name)
         if full is None:
             raise ValueError(f"refusing to read member outside the archive: {name!r}")
@@ -154,7 +264,13 @@ class Archive:
     def pf(self, name):
         fn = self._fname(name)
         if fn not in self._pf:
-            self._pf[fn] = pq.ParquetFile(self.root / fn)
+            if self.root is None:   # S3 mode
+                zi = self._s3_members[fn]
+                off = self._s3_data_offset(fn, zi)
+                self._pf[fn] = pq.ParquetFile(
+                    _S3RangeFile(self._s3, self._s3_bucket, self._s3_key, off, zi.file_size))
+            else:
+                self._pf[fn] = pq.ParquetFile(self.root / fn)
         return self._pf[fn]
 
     def num_rows(self, name):
@@ -183,9 +299,11 @@ class Archive:
             top = dotted.split(".", 1)[0]
             top_key = (name, top)
             if top_key not in self._col:
-                self._col[top_key] = pq.read_table(
-                    self.root / self._fname(name), columns=[top]
-                ).column(top).combine_chunks()
+                if self.root is None:   # S3 mode: read through pf() so _S3RangeFile handles I/O
+                    tbl = self.pf(name).read(columns=[top])
+                else:
+                    tbl = pq.read_table(self.root / self._fname(name), columns=[top])
+                self._col[top_key] = tbl.column(top).combine_chunks()
             col = self._col[top_key]
             self._col[(name, dotted)] = col.field(dotted.split(".", 1)[1]) if "." in dotted else col
         return self._col[(name, dotted)]
@@ -284,7 +402,11 @@ def _archive_info(ar):
                 facet_data[top]["compressed_bytes"] += cc.total_compressed_size
                 facet_data[top]["uncompressed_bytes"] += cc.total_uncompressed_size
 
-        file_size = (ar.root / ar._fname(name)).stat().st_size
+        fn = ar._fname(name)
+        if ar.root is None:         # S3 mode: file size from ZIP central directory
+            file_size = ar._s3_members[fn].file_size if fn in ar._s3_members else 0
+        else:
+            file_size = (ar.root / fn).stat().st_size
         result.append({
             "name": name,
             "entity_type": idx_entry.get("entity_type"),

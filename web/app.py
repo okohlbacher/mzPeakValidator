@@ -73,29 +73,9 @@ async def _fetch_https(url: str) -> str:
     return path
 
 
-async def _fetch_s3(bucket: str, key: str) -> str:
-    try:
-        import boto3
-    except ImportError:
-        raise RuntimeError(
-            "S3 support requires boto3. Add it to web/requirements.txt and rebuild the image."
-        )
-    s3 = boto3.client("s3")
-    head = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: s3.head_object(Bucket=bucket, Key=key)
-    )
-    if head["ContentLength"] > MAX_BYTES:
-        raise _TooLarge
-    fd, path = tempfile.mkstemp(suffix=".mzpeak")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            await asyncio.get_event_loop().run_in_executor(
-                None, lambda: s3.download_fileobj(bucket, key, f)
-            )
-    except Exception:
-        Path(path).unlink(missing_ok=True)
-        raise
-    return path
+async def _validate_s3(uri: str):
+    """Validate an S3 archive directly via streaming range requests — no local download."""
+    return await asyncio.get_event_loop().run_in_executor(None, run, uri)
 
 
 # ── HTML rendering ─────────────────────────────────────────────────────────────
@@ -392,7 +372,9 @@ async def validate(
         if url:
             parsed = urlparse(url)
             if parsed.scheme == "s3":
-                path = await _fetch_s3(parsed.netloc, parsed.path.lstrip("/"))
+                # Stream directly from S3 without downloading — no temp file, no size limit
+                result = await _validate_s3(url)
+                return _page(_result_html(result))
             elif parsed.scheme in ("http", "https"):
                 path = await _fetch_https(url)
             else:
