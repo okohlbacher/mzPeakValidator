@@ -71,6 +71,87 @@ _SUMMARY_RULE = {"id": "archive_summary", "primitive": "archive_summary", "recov
 BATCH_SIZE = 1 << 17                    # 131072 rows/batch for streaming reads; ~1 MB per scalar column per batch
 
 # ------------------------------------------------ remote streaming (S3 + HTTPS)
+def _fetch_zip_members(session, url):
+    """Enumerate a remote ZIP's central directory via HTTP range requests.
+    Returns {filename: SimpleNamespace(filename, header_offset, file_size, compress_size, compress_type)}.
+    Uses no external ZIP library — scans backward for EOCD so trailing zero-padding
+    (present in mzPeak archives) is handled correctly on every Python version."""
+    import types
+
+    # 1. File size via HEAD
+    head = session.head(url, timeout=30, allow_redirects=True)
+    head.raise_for_status()
+    cl = head.headers.get("Content-Length")
+    if not cl:
+        raise ValueError("server did not return Content-Length — cannot use range-based streaming; "
+                         "download the file and validate locally instead")
+    file_size = int(cl)
+
+    # 2. Fetch tail (≤64 KiB + 22 b) to locate EOCD; for small files this is the whole archive.
+    tail_size = min(file_size, 65558)
+    tail_start = file_size - tail_size
+    tail = session.get(url, headers={"Range": f"bytes={tail_start}-{file_size - 1}"}, timeout=60)
+    tail.raise_for_status()
+    tail = tail.content
+
+    # 3. Scan backward for EOCD signature (PK\x05\x06), skipping trailing padding/garbage.
+    cd_offset = cd_size = None
+    for i in range(len(tail) - 22, -1, -1):
+        if tail[i:i + 4] != b'PK\x05\x06':
+            continue
+        _, _, _, _, n_entries, cd_sz, cd_off, comment_len = \
+            struct.unpack_from("<4sHHHHIIH", tail, i)
+        if i + 22 + comment_len > len(tail):
+            continue                              # comment_len inconsistent, keep scanning
+        if cd_off == 0xFFFFFFFF or n_entries == 0xFFFF:
+            # Zip64: read locator (20 bytes) immediately before EOCD
+            loc_abs = tail_start + i - 20
+            if loc_abs >= 0:
+                loc = session.get(url, headers={"Range": f"bytes={loc_abs}-{loc_abs + 19}"}, timeout=30)
+                loc.raise_for_status()
+                loc = loc.content
+                if loc[:4] == b'PK\x06\x07':
+                    e64_abs = struct.unpack_from("<Q", loc, 8)[0]
+                    e64 = session.get(url, headers={"Range": f"bytes={e64_abs}-{e64_abs + 55}"}, timeout=30)
+                    e64.raise_for_status()
+                    e64 = e64.content
+                    if e64[:4] == b'PK\x06\x06':
+                        cd_sz, cd_off = struct.unpack_from("<QQ", e64, 40)
+        cd_size, cd_offset = cd_sz, cd_off
+        break
+
+    if cd_offset is None:
+        raise zipfile.BadZipFile("Could not locate ZIP central directory in remote archive")
+
+    # 4. Fetch central directory (can be within tail already, but a second request is simpler).
+    cd = session.get(url, headers={"Range": f"bytes={cd_offset}-{cd_offset + cd_size - 1}"}, timeout=120)
+    cd.raise_for_status()
+    cd = cd.content
+
+    # 5. Parse central directory entries.
+    members = {}
+    pos = 0
+    while pos + 46 <= len(cd):
+        if cd[pos:pos + 4] != b'PK\x01\x02':
+            break
+        # Central directory entry: sig(4s) ver_made(H) ver_need(H) flags(H) method(H)
+        #   time(H) date(H) crc32(I) comp_sz(I) uncomp_sz(I) fname_len(H) extra_len(H)
+        #   cmt_len(H) disk_start(H) int_attr(H) ext_attr(I) hdr_offset(I)  = 46 bytes
+        _, _, _, _, method, _, _, _, comp_sz, uncomp_sz, fname_len, extra_len, cmt_len, _, _, _, hdr_off = \
+            struct.unpack_from("<4sHHHHHHIIIHHHHHII", cd, pos)
+        raw_name = cd[pos + 46:pos + 46 + fname_len]
+        try:
+            fname = raw_name.decode("utf-8")
+        except UnicodeDecodeError:
+            fname = raw_name.decode("cp437")
+        members[fname] = types.SimpleNamespace(
+            filename=fname, header_offset=hdr_off,
+            file_size=uncomp_sz, compress_size=comp_sz, compress_type=method)
+        pos += 46 + fname_len + extra_len + cmt_len
+
+    return members
+
+
 class _RangeFile:
     """Seekable file-like view of a STORED ZIP member, backed by HTTP range requests.
     Works for HTTPS URLs and S3 presigned URLs — the full member is never buffered.
@@ -164,24 +245,20 @@ class Archive:
 
     def _init_remote(self, url):
         """Set up remote streaming mode (HTTPS or S3 presigned URL): enumerate the ZIP central
-        directory via remotezip range requests, read mzpeak_index.json into memory; Parquet
-        members are accessed via _RangeFile without downloading the full archive."""
+        directory via HTTP range requests, read mzpeak_index.json into memory; Parquet members
+        are accessed via _RangeFile without downloading the full archive."""
         try:
             import requests
-            from remotezip import RemoteZip
         except ImportError as exc:
-            raise ImportError(
-                f"Remote streaming requires requests and remotezip (pip install remotezip): {exc}"
-            )
+            raise ImportError(f"Remote streaming requires requests (pip install requests): {exc}")
         self._remote_url = url
         self._remote_session = requests.Session()
-        with RemoteZip(url) as rz:
-            self._remote_members = {zi.filename: zi for zi in rz.infolist()}
-            idx_bytes = (rz.read("mzpeak_index.json")
-                         if "mzpeak_index.json" in self._remote_members else b"null")
+        self._remote_members = _fetch_zip_members(self._remote_session, url)
         self._remote_offsets = {}    # fn -> absolute data offset, lazily filled (one 30-byte GET)
         self.root = None             # sentinel: remote mode has no local root
         self._index_utf8_error = False
+        idx_bytes = (self.read_member("mzpeak_index.json")
+                     if "mzpeak_index.json" in self._remote_members else b"null")
         try:
             self.index = json.loads(idx_bytes.decode("utf-8"))
         except UnicodeDecodeError:
