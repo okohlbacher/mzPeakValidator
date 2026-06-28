@@ -16,7 +16,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from mzpeak_validator import run
 
-MAX_BYTES = 1 << 30   # 1 GiB hard limit
+MAX_BYTES = 5 << 30   # 5 GiB hard limit
 CHUNK     = 1 << 20   # 1 MiB read chunks
 
 app = FastAPI(title="mzPeak Validator")
@@ -180,7 +180,7 @@ _FORM = """
     <div class="pane" id="p1">
       <label for="file">Archive file</label>
       <input type="file" name="file" id="file" accept=".mzpeak,.zip">
-      <p class="hint">Max 1 GB. Larger files: use the
+      <p class="hint">Max 5 GB. Larger files: use the
          <a href="https://github.com/okohlbacher/mzPeakValidator" target="_blank">CLI tool</a>.</p>
     </div>
     <button type="submit" id="btn">Validate</button>
@@ -359,7 +359,7 @@ def _err(msg: str) -> str:
 
 _TOO_LARGE = (
     '<div class="big-box">'
-    '<strong>File exceeds the 1 GB web limit.</strong><br>'
+    '<strong>File exceeds the 5 GB web limit.</strong><br>'
     'For large archives use the <a href="https://github.com/okohlbacher/mzPeakValidator"'
     ' target="_blank">mzPeak Validator CLI</a>:<br>'
     '<code>pip install mzpeak-validator &amp;&amp; mzpeak-validate archive.mzpeak</code>'
