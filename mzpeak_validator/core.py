@@ -67,6 +67,7 @@ except ImportError:                                             # jsonschema < 4
 CATALOG_VERSION = "1.10"         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
+_SUMMARY_RULE = {"id": "archive_summary", "primitive": "archive_summary", "recovery": "none"}
 BATCH_SIZE = 1 << 17                    # 131072 rows/batch for streaming reads; ~1 MB per scalar column per batch
 
 # ------------------------------------------------------------------------ archive
@@ -227,6 +228,84 @@ def type_matches(got, want):
 def has(ar, name, dotted):
     return ar.has_file(name) and dotted in ar.fields(name)
 
+def _fmt_bytes(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024
+
+def _archive_info(ar):
+    """Collect Parquet footer metadata (rows, sizes, encodings). Footer-only — always fast."""
+    idx_files = {}
+    for f in ((ar.index or {}).get("files") or []):
+        n = f.get("name", "")
+        idx_files[n] = f
+        if n.endswith(".parquet"):
+            idx_files[n[:-8]] = f
+
+    candidates = ["spectra_metadata", "spectra_data", "spectra_peaks",
+                  "chromatograms_metadata", "chromatograms_data"]
+    for n in list(idx_files):
+        base = n[:-8] if n.endswith(".parquet") else n
+        if base not in candidates:
+            candidates.append(base)
+
+    result = []
+    for name in candidates:
+        if not ar.has_file(name):
+            continue
+        try:
+            meta = ar.pf(name).metadata
+        except Exception:
+            continue
+        idx_entry = idx_files.get(name) or {}
+
+        # Leaf-column counts from row group 0 (schema is static across row groups)
+        leaf_counts = {}
+        if meta.num_row_groups > 0:
+            rg0 = meta.row_group(0)
+            for ci in range(rg0.num_columns):
+                top = rg0.column(ci).path_in_schema.split(".")[0]
+                leaf_counts[top] = leaf_counts.get(top, 0) + 1
+
+        # Aggregate encodings and sizes across all row groups
+        facet_data = {}
+        for rgi in range(meta.num_row_groups):
+            rg = meta.row_group(rgi)
+            for ci in range(rg.num_columns):
+                cc = rg.column(ci)
+                top = cc.path_in_schema.split(".")[0]
+                if top not in facet_data:
+                    facet_data[top] = {"encodings": set(), "compression": cc.compression,
+                                       "compressed_bytes": 0, "uncompressed_bytes": 0}
+                for e in (cc.encodings or []):
+                    s = str(e)
+                    facet_data[top]["encodings"].add(s.split(".")[-1] if "." in s else s)
+                facet_data[top]["compressed_bytes"] += cc.total_compressed_size
+                facet_data[top]["uncompressed_bytes"] += cc.total_uncompressed_size
+
+        file_size = (ar.root / ar._fname(name)).stat().st_size
+        result.append({
+            "name": name,
+            "entity_type": idx_entry.get("entity_type"),
+            "data_kind": idx_entry.get("data_kind"),
+            "rows": meta.num_rows,
+            "row_groups": meta.num_row_groups,
+            "file_bytes": file_size,
+            "compressed_bytes": sum(v["compressed_bytes"] for v in facet_data.values()),
+            "uncompressed_bytes": sum(v["uncompressed_bytes"] for v in facet_data.values()),
+            "facets": [
+                {"name": top,
+                 "leaf_columns": leaf_counts.get(top, 0),
+                 "compression": d["compression"],
+                 "encodings": sorted(d["encodings"]),
+                 "compressed_bytes": d["compressed_bytes"],
+                 "uncompressed_bytes": d["uncompressed_bytes"]}
+                for top, d in facet_data.items()
+            ],
+        })
+    return result
+
 # --------------------------------------------------------------- profile resolution
 def _vkey(v):
     return [int(x) for x in re.findall(r"\d+", str(v))] or [0]
@@ -330,6 +409,7 @@ class Report:
         self.cv_versions = {a["id"]: a.get("version") for a in profile.manifest.get("artifacts", [])
                             if a.get("role") == "cv"}
         self.archive = str(archive_path)
+        self.archive_info = None   # filled by run() via _archive_info()
 
     def add(self, rule, level, message, location=None, recovery=None, fix=None):
         rid = rule.get("id")
@@ -356,7 +436,8 @@ class Report:
         warns = sum(f["level"] == "warning" for f in self.findings)
         return {"verdict": "FAIL" if errs else "PASS", "archive": self.archive, "profile": self.profile,
                 "rule_primitive_catalog": CATALOG_VERSION, "cv": self.cv_versions,
-                "summary": {"errors": errs, "warnings": warns}, "findings": self.findings}
+                "summary": {"errors": errs, "warnings": warns},
+                "archive_info": self.archive_info, "findings": self.findings}
 
 # ----------------------------------------------------------------------- primitives
 INFLECT = re.compile(r"^([A-Za-z]+)_(\d+)_")
@@ -1224,6 +1305,20 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
         prof_dir, note = resolve_profile(ar, profiles_root, explicit=profile)
         prof = Profile(prof_dir)
         rep = Report(prof, archive_path)
+        rep.archive_info = _archive_info(ar)
+        for fi in rep.archive_info:
+            et = fi.get("entity_type") or ""
+            dk = fi.get("data_kind") or ""
+            tag = f" [{et}/{dk}]" if et or dk else ""
+            facet_parts = [
+                f"{fac['name']} {fac['leaf_columns']}c {fac['compression']} {'/'.join(fac['encodings'])}"
+                for fac in fi.get("facets", [])
+            ]
+            msg = (f"{fi['name']}{tag}  {fi['rows']:,} rows  {fi['row_groups']} RG"
+                   f"  {_fmt_bytes(fi['file_bytes'])}")
+            if facet_parts:
+                msg += "  |  " + "  |  ".join(facet_parts)
+            rep.add(_SUMMARY_RULE, "info", msg, location={"file": fi["name"]})
         if note:
             rep.add({"id": "profile_resolution", "primitive": "profile_resolution"}, "warning", note)
         catalog = prof.manifest.get("rule_primitive_catalog")
