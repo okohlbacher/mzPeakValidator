@@ -50,32 +50,9 @@ async def _save_upload(request: Request, upload: UploadFile) -> str:
     return path
 
 
-async def _fetch_https(url: str) -> str:
-    import httpx
-    fd, path = tempfile.mkstemp(suffix=".mzpeak")
-    try:
-        written = 0
-        with os.fdopen(fd, "wb") as f:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=600) as client:
-                async with client.stream("GET", url) as resp:
-                    resp.raise_for_status()
-                    cl = resp.headers.get("content-length")
-                    if cl and int(cl) > MAX_BYTES:
-                        raise _TooLarge
-                    async for chunk in resp.aiter_bytes(CHUNK):
-                        written += len(chunk)
-                        if written > MAX_BYTES:
-                            raise _TooLarge
-                        f.write(chunk)
-    except Exception:
-        Path(path).unlink(missing_ok=True)
-        raise
-    return path
-
-
-async def _validate_s3(uri: str):
-    """Validate an S3 archive directly via streaming range requests — no local download."""
-    return await asyncio.get_event_loop().run_in_executor(None, run, uri)
+async def _validate_remote(url: str):
+    """Validate a remote archive (HTTPS or S3 presigned URL) via range requests — no download."""
+    return await asyncio.get_event_loop().run_in_executor(None, run, url)
 
 
 # ── HTML rendering ─────────────────────────────────────────────────────────────
@@ -371,12 +348,10 @@ async def validate(
         url = (url or "").strip()
         if url:
             parsed = urlparse(url)
-            if parsed.scheme == "s3":
-                # Stream directly from S3 without downloading — no temp file, no size limit
-                result = await _validate_s3(url)
+            if parsed.scheme in ("s3", "http", "https"):
+                # Stream directly via HTTP range requests — no download, no temp file, no size limit
+                result = await _validate_remote(url)
                 return _page(_result_html(result))
-            elif parsed.scheme in ("http", "https"):
-                path = await _fetch_https(url)
             else:
                 return HTMLResponse(
                     _page(_err(f"Unsupported URL scheme '{parsed.scheme}'. Use https:// or s3://")),

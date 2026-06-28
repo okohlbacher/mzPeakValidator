@@ -70,13 +70,14 @@ MAX_PER_RULE = 25                       # cap distinct findings per rule, then s
 _SUMMARY_RULE = {"id": "archive_summary", "primitive": "archive_summary", "recovery": "none"}
 BATCH_SIZE = 1 << 17                    # 131072 rows/batch for streaming reads; ~1 MB per scalar column per batch
 
-# ------------------------------------------------------------------ S3 streaming
-class _S3RangeFile:
-    """Seekable file-like view of a STORED ZIP member on S3, backed by S3 range requests.
-    pyarrow's ParquetFile accepts any file-like with read/seek/tell/closed — each call
-    issues a targeted GetObject(Range=…) so the full member is never buffered locally."""
-    def __init__(self, s3, bucket, key, data_offset, data_size):
-        self._s3, self._bucket, self._key = s3, bucket, key
+# ------------------------------------------------ remote streaming (S3 + HTTPS)
+class _RangeFile:
+    """Seekable file-like view of a STORED ZIP member, backed by HTTP range requests.
+    Works for HTTPS URLs and S3 presigned URLs — the full member is never buffered.
+    pyarrow's ParquetFile requires read/seek/tell/closed; each read() issues one
+    targeted Range GET so memory is O(read_size), not O(file_size)."""
+    def __init__(self, session, url, data_offset, data_size):
+        self._session, self._url = session, url
         self._start, self._size, self._pos = data_offset, data_size, 0
 
     def read(self, n=-1):
@@ -84,7 +85,9 @@ class _S3RangeFile:
         if n <= 0 or self._pos >= self._size: return b""
         end = min(self._pos + n, self._size)
         r = f"bytes={self._start + self._pos}-{self._start + end - 1}"
-        data = self._s3.get_object(Bucket=self._bucket, Key=self._key, Range=r)["Body"].read()
+        resp = self._session.get(self._url, headers={"Range": r}, timeout=120)
+        resp.raise_for_status()
+        data = resp.content
         self._pos += len(data)
         return data
 
@@ -112,9 +115,22 @@ class Archive:
         self.path = Path(str(path))
         self._tmp = None
         self._pf, self._col = {}, {}
-        # S3 streaming mode: no local extraction, range requests per member
-        if str(path).startswith("s3://"):
-            self._init_s3(str(path))
+        # Remote streaming mode: no local extraction; range requests per member.
+        # s3:// → convert to presigned HTTPS URL via boto3, then same path as http(s)://.
+        uri = str(path)
+        if uri.startswith("s3://"):
+            try:
+                import boto3
+            except ImportError as exc:
+                raise ImportError(f"S3 streaming requires boto3 (pip install boto3): {exc}")
+            bucket, _, key = uri[5:].partition("/")
+            # Presigned URL valid for 12 h — outlasts any realistic validation run.
+            url = boto3.client("s3").generate_presigned_url(
+                "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=43200)
+            self._init_remote(url)
+            return
+        if uri.startswith(("http://", "https://")):
+            self._init_remote(uri)
             return
         try:                                          # any failure after mkdtemp must not leak the tempdir
             if self.path.is_dir():
@@ -146,30 +162,25 @@ class Archive:
             self.cleanup()
             raise
 
-    def _init_s3(self, uri):
-        """Set up S3 streaming mode: enumerate ZIP central directory via remotezip presigned URL,
-        read mzpeak_index.json into memory; Parquet members are accessed via _S3RangeFile."""
+    def _init_remote(self, url):
+        """Set up remote streaming mode (HTTPS or S3 presigned URL): enumerate the ZIP central
+        directory via remotezip range requests, read mzpeak_index.json into memory; Parquet
+        members are accessed via _RangeFile without downloading the full archive."""
         try:
-            import boto3
+            import requests
             from remotezip import RemoteZip
         except ImportError as exc:
             raise ImportError(
-                f"S3 streaming requires boto3 and remotezip (pip install boto3 remotezip): {exc}"
+                f"Remote streaming requires requests and remotezip (pip install remotezip): {exc}"
             )
-        bucket, _, key = uri[5:].partition("/")
-        s3 = boto3.client("s3")
-        # Presigned URL lets remotezip use HTTP range requests against S3 without AWS credentials
-        # in the HTTP layer. ExpiresIn=43200 (12 h) outlasts any realistic validation run.
-        url = s3.generate_presigned_url(
-            "get_object", Params={"Bucket": bucket, "Key": key}, ExpiresIn=43200)
+        self._remote_url = url
+        self._remote_session = requests.Session()
         with RemoteZip(url) as rz:
-            self._s3_members = {zi.filename: zi for zi in rz.infolist()}
-            idx_bytes = rz.read("mzpeak_index.json") if "mzpeak_index.json" in self._s3_members else b"null"
-        self._s3 = s3
-        self._s3_bucket = bucket
-        self._s3_key = key
-        self._s3_offsets = {}        # fn -> absolute data offset (lazily filled, one 30-byte GET per file)
-        self.root = None             # sentinel: S3 mode has no local root
+            self._remote_members = {zi.filename: zi for zi in rz.infolist()}
+            idx_bytes = (rz.read("mzpeak_index.json")
+                         if "mzpeak_index.json" in self._remote_members else b"null")
+        self._remote_offsets = {}    # fn -> absolute data offset, lazily filled (one 30-byte GET)
+        self.root = None             # sentinel: remote mode has no local root
         self._index_utf8_error = False
         try:
             self.index = json.loads(idx_bytes.decode("utf-8"))
@@ -179,22 +190,22 @@ class Archive:
         except (json.JSONDecodeError, ValueError):
             self.index = None
 
-    def _s3_data_offset(self, fn, zi):
-        """Return the absolute byte offset of member data (after local file header) in the S3 object.
-        Cached after the first call (one 30-byte range request per Parquet file)."""
-        if fn not in self._s3_offsets:
+    def _remote_data_offset(self, fn, zi):
+        """Absolute byte offset of member data (past the local file header). Cached per member —
+        costs one 30-byte range request the first time a Parquet file is opened."""
+        if fn not in self._remote_offsets:
             start = zi.header_offset
-            raw = self._s3.get_object(
-                Bucket=self._s3_bucket, Key=self._s3_key,
-                Range=f"bytes={start}-{start + 29}"
-            )["Body"].read()
+            resp = self._remote_session.get(
+                self._remote_url, headers={"Range": f"bytes={start}-{start + 29}"}, timeout=30)
+            resp.raise_for_status()
+            raw = resp.content
             if len(raw) < 30:
-                raise ValueError(f"truncated local file header for S3 member {fn!r}")
+                raise ValueError(f"truncated local file header for remote member {fn!r}")
             # Local file header: sig(4) ver(2) flags(2) method(2) time(2) date(2)
             #   crc32(4) comp_size(4) uncomp_size(4) fname_len(2) extra_len(2)
             fname_len, extra_len = struct.unpack_from("<HH", raw, 26)
-            self._s3_offsets[fn] = start + 30 + fname_len + extra_len
-        return self._s3_offsets[fn]
+            self._remote_offsets[fn] = start + 30 + fname_len + extra_len
+        return self._remote_offsets[fn]
 
     def cleanup(self):
         if self._tmp:
@@ -205,7 +216,7 @@ class Archive:
         from the untrusted index, so a member must not be able to address files outside the archive."""
         if not rel:
             return None
-        if self.root is None:       # S3 mode — trust membership check instead
+        if self.root is None:       # remote mode — trust membership check instead
             return None
         root = self.root.resolve()
         full = (self.root / rel).resolve()
@@ -216,16 +227,16 @@ class Archive:
         return full
 
     def _is_file(self, rel):
-        if self.root is None:       # S3 mode
-            return bool(rel) and rel in self._s3_members
+        if self.root is None:       # remote mode
+            return bool(rel) and rel in self._remote_members
         full = self._contained(rel)
         return full is not None and full.is_file()
 
     def _fname(self, name):
         """Resolve a logical table name to a contained file ('spectra_data' -> 'spectra_data.parquet')."""
-        if self.root is None:       # S3 mode
-            if name in self._s3_members: return name
-            if name + ".parquet" in self._s3_members: return name + ".parquet"
+        if self.root is None:       # remote mode
+            if name in self._remote_members: return name
+            if name + ".parquet" in self._remote_members: return name + ".parquet"
             return name
         if name.endswith(".parquet") and self._is_file(name):
             return name
@@ -238,22 +249,24 @@ class Archive:
 
     def has_member(self, name):
         """Is `name` a present, archive-contained raw member (not parquet-resolved)?"""
-        if self.root is None:       # S3 mode
-            return name in self._s3_members
+        if self.root is None:       # remote mode
+            return name in self._remote_members
         return self._is_file(name)
 
     def read_member(self, name, n=None):
         """Raw bytes of an archive-contained member (first `n` bytes if given)."""
-        if self.root is None:       # S3 mode
-            if name not in self._s3_members:
+        if self.root is None:       # remote mode
+            if name not in self._remote_members:
                 raise ValueError(f"refusing to read member outside the archive: {name!r}")
-            zi = self._s3_members[name]
-            off = self._s3_data_offset(name, zi)
-            resp = self._s3.get_object(
-                Bucket=self._s3_bucket, Key=self._s3_key,
-                Range=f"bytes={off}-{off + zi.file_size - 1}"
+            zi = self._remote_members[name]
+            off = self._remote_data_offset(name, zi)
+            resp = self._remote_session.get(
+                self._remote_url,
+                headers={"Range": f"bytes={off}-{off + zi.file_size - 1}"},
+                timeout=120,
             )
-            data = resp["Body"].read()
+            resp.raise_for_status()
+            data = resp.content
             return data if n is None else data[:n]
         full = self._contained(name)
         if full is None:
@@ -264,11 +277,11 @@ class Archive:
     def pf(self, name):
         fn = self._fname(name)
         if fn not in self._pf:
-            if self.root is None:   # S3 mode
-                zi = self._s3_members[fn]
-                off = self._s3_data_offset(fn, zi)
+            if self.root is None:   # remote mode
+                zi = self._remote_members[fn]
+                off = self._remote_data_offset(fn, zi)
                 self._pf[fn] = pq.ParquetFile(
-                    _S3RangeFile(self._s3, self._s3_bucket, self._s3_key, off, zi.file_size))
+                    _RangeFile(self._remote_session, self._remote_url, off, zi.file_size))
             else:
                 self._pf[fn] = pq.ParquetFile(self.root / fn)
         return self._pf[fn]
@@ -299,7 +312,7 @@ class Archive:
             top = dotted.split(".", 1)[0]
             top_key = (name, top)
             if top_key not in self._col:
-                if self.root is None:   # S3 mode: read through pf() so _S3RangeFile handles I/O
+                if self.root is None:   # remote mode: read through pf() so _S3RangeFile handles I/O
                     tbl = self.pf(name).read(columns=[top])
                 else:
                     tbl = pq.read_table(self.root / self._fname(name), columns=[top])
@@ -403,8 +416,8 @@ def _archive_info(ar):
                 facet_data[top]["uncompressed_bytes"] += cc.total_uncompressed_size
 
         fn = ar._fname(name)
-        if ar.root is None:         # S3 mode: file size from ZIP central directory
-            file_size = ar._s3_members[fn].file_size if fn in ar._s3_members else 0
+        if ar.root is None:         # remote mode: file size from ZIP central directory
+            file_size = ar._remote_members[fn].file_size if fn in ar._remote_members else 0
         else:
             file_size = (ar.root / fn).stat().st_size
         result.append({
