@@ -144,6 +144,24 @@ def _fetch_zip_members(session, url):
             fname = raw_name.decode("utf-8")
         except UnicodeDecodeError:
             fname = raw_name.decode("cp437")
+        # Zip64: when any fixed field holds the sentinel 0xFFFFFFFF the real value
+        # is in the Zip64 extended-info extra block (header id 0x0001) of this CD entry.
+        if comp_sz == 0xFFFFFFFF or uncomp_sz == 0xFFFFFFFF or hdr_off == 0xFFFFFFFF:
+            epos = pos + 46 + fname_len
+            eend = epos + extra_len
+            while epos + 4 <= eend:
+                eid   = struct.unpack_from("<H", cd, epos)[0]
+                esz   = struct.unpack_from("<H", cd, epos + 2)[0]
+                if eid == 0x0001:
+                    dp = epos + 4
+                    if uncomp_sz == 0xFFFFFFFF and dp + 8 <= epos + 4 + esz:
+                        uncomp_sz = struct.unpack_from("<Q", cd, dp)[0]; dp += 8
+                    if comp_sz == 0xFFFFFFFF and dp + 8 <= epos + 4 + esz:
+                        comp_sz   = struct.unpack_from("<Q", cd, dp)[0]; dp += 8
+                    if hdr_off == 0xFFFFFFFF and dp + 8 <= epos + 4 + esz:
+                        hdr_off   = struct.unpack_from("<Q", cd, dp)[0]
+                    break
+                epos += 4 + esz
         members[fname] = types.SimpleNamespace(
             filename=fname, header_offset=hdr_off,
             file_size=uncomp_sz, compress_size=comp_sz, compress_type=method)
