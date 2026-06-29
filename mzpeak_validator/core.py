@@ -645,7 +645,7 @@ def _fmt_bytes(n):
             return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
         n /= 1024
 
-def _archive_info(ar):
+def _archive_info(ar, progress_cb=None):
     """Collect Parquet footer metadata (rows, sizes, encodings). Footer-only — always fast."""
     idx_files = {}
     for f in ((ar.index or {}).get("files") or []):
@@ -667,6 +667,8 @@ def _archive_info(ar):
         if not ar.has_file(name):
             continue
         try:
+            if progress_cb:
+                progress_cb({"n": 0, "total": None, "rule": f"reading {name}"})
             meta = ar.pf(name).metadata
         except Exception:
             continue
@@ -1738,7 +1740,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
         rep = Report(prof, archive_path)
         if progress_cb:
             progress_cb({"n": 0, "total": None, "rule": "reading archive"})
-        rep.archive_info = _archive_info(ar)
+        rep.archive_info = _archive_info(ar, progress_cb=progress_cb)
         for fi in rep.archive_info:
             et = fi.get("entity_type") or ""
             dk = fi.get("data_kind") or ""
