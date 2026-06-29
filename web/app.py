@@ -13,10 +13,10 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 try:
-    from mzpeak_validator import run
+    from mzpeak_validator import run, __version__
 except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
-    from mzpeak_validator import run
+    from mzpeak_validator import run, __version__
 
 MAX_BYTES = 250 << 20  # 250 MiB
 CHUNK     = 1 << 20
@@ -263,6 +263,7 @@ def _page(body: str = "") -> str:
 <div id="result-section">{body}</div>
 <footer>
   <a href="https://github.com/okohlbacher/mzPeakValidator" target="_blank">mzPeakValidator</a>
+  &nbsp;·&nbsp; v{__version__}
   &nbsp;·&nbsp; profile mzpeak-0.9
   &nbsp;·&nbsp; <a href="https://mzpeak.org" target="_blank">mzpeak.org</a>
 </footer>
