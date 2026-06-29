@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mzpeak-validator"
-version = "0.9.9"
+version = "0.9.10"
 description = "Language-independent-by-design validator for the HUPO-PSI mzPeak mass-spectrometry format."
 readme = "README.md"
 requires-python = ">=3.9"  # 3.14 verified; floor kept at 3.9 for breadth

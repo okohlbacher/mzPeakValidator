@@ -1,13 +1,24 @@
 """mzPeak Validator web service — FastAPI frontend for mzpeak_validator.run()."""
 import asyncio
 import json
+import logging
 import os
 import sys
 import tempfile
 import threading
+import time
 from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03d [%(name)s] %(message)s",
+    datefmt="%H:%M:%S",
+    stream=sys.stderr,
+    force=True,
+)
+log = logging.getLogger("mzpeak.web")
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -444,34 +455,48 @@ async def validate(
         return HTMLResponse(_page(_TOO_LARGE_HTML), status_code=413)
 
     # Stream SSE: progress events while the validator runs, then a final result event.
+    req_id = os.urandom(4).hex()
+    t0 = time.monotonic()
+    log.info("[%s] START target=%r quick=%s", req_id, str(target)[:120], quick)
+
     loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
     result_holder: list = [None]
     error_holder:  list = [None]
 
     def _cb(event: dict) -> None:
+        log.info("[%s] +%.2fs cb %s", req_id, time.monotonic() - t0, json.dumps(event))
         loop.call_soon_threadsafe(q.put_nowait, event)
 
     def _worker() -> None:
+        log.info("[%s] +%.2fs worker thread start", req_id, time.monotonic() - t0)
         try:
             result_holder[0] = run(target, quick=quick, progress_cb=_cb)
+            log.info("[%s] +%.2fs worker done", req_id, time.monotonic() - t0)
         except Exception as e:
+            log.exception("[%s] +%.2fs worker error: %s", req_id, time.monotonic() - t0, e)
             error_holder[0] = e
         finally:
+            log.info("[%s] +%.2fs worker sentinel", req_id, time.monotonic() - t0)
             loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
 
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
 
     async def _generate():
+        ka = 0
         try:
             while True:
                 try:
                     ev = await asyncio.wait_for(q.get(), timeout=1.0)
                 except asyncio.TimeoutError:
+                    ka += 1
+                    if ka == 1 or ka % 10 == 0:
+                        log.info("[%s] +%.2fs keepalive #%d", req_id, time.monotonic() - t0, ka)
                     yield ": keepalive\n\n"  # flushes nginx proxy buffer; ignored by JS
                     continue
                 if ev is None:
+                    log.info("[%s] +%.2fs sentinel → building result", req_id, time.monotonic() - t0)
                     break
                 yield f"event: progress\ndata: {json.dumps(ev)}\n\n"
 
@@ -479,14 +504,18 @@ async def validate(
 
             if error_holder[0] is not None:
                 e = error_holder[0]
+                log.info("[%s] +%.2fs sending error result", req_id, time.monotonic() - t0)
                 html = _TOO_LARGE_HTML if isinstance(e, _TooLarge) else _err_html(str(e))
             else:
+                log.info("[%s] +%.2fs sending pass/fail result", req_id, time.monotonic() - t0)
                 html = _result_html(result_holder[0])
 
             yield f"event: result\ndata: {json.dumps({'html': html})}\n\n"
         finally:
             if path:
                 Path(path).unlink(missing_ok=True)
+                log.info("[%s] +%.2fs temp file removed", req_id, time.monotonic() - t0)
+            log.info("[%s] +%.2fs request done", req_id, time.monotonic() - t0)
 
     return StreamingResponse(
         _generate(),
