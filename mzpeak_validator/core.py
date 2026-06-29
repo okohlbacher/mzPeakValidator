@@ -1729,7 +1729,7 @@ def _load_profile(profile_dir_str):
     return Profile(Path(profile_dir_str))
 
 # -------------------------------------------------------------------------------- run
-def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, medium=False):
+def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, medium=False, progress_cb=None):
     ar = Archive(archive_path)
     try:
         prof_dir, note = resolve_profile(ar, profiles_root, explicit=profile)
@@ -1811,7 +1811,12 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
                         try: fut.result()
                         except Exception: pass
 
-        for rule, fn, params in prepared:
+        if progress_cb:
+            progress_cb({"n": 0, "total": len(prepared), "rule": ""})
+
+        for i, (rule, fn, params) in enumerate(prepared):
+            if progress_cb:
+                progress_cb({"n": i + 1, "total": len(prepared), "rule": rule.get("id", "")})
             _run_rule(rule, fn, params)
 
         return rep.to_dict()

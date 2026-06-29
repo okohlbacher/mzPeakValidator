@@ -1,14 +1,16 @@
 """mzPeak Validator web service — FastAPI frontend for mzpeak_validator.run()."""
 import asyncio
+import json
 import os
 import sys
 import tempfile
+import threading
 from html import escape
 from pathlib import Path
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 
 try:
     from mzpeak_validator import run
@@ -16,8 +18,8 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from mzpeak_validator import run
 
-MAX_BYTES = 250 << 20  # 250 MiB upload limit (server has ~750 MB cgroup; use CLI for larger files)
-CHUNK     = 1 << 20   # 1 MiB read chunks
+MAX_BYTES = 250 << 20  # 250 MiB
+CHUNK     = 1 << 20
 
 app = FastAPI(title="mzPeak Validator")
 
@@ -50,11 +52,6 @@ async def _save_upload(request: Request, upload: UploadFile) -> str:
     return path
 
 
-async def _validate_remote(url: str):
-    """Validate a remote archive (HTTPS or S3 presigned URL) via range requests — no download."""
-    return await asyncio.get_event_loop().run_in_executor(None, run, url)
-
-
 # ── HTML rendering ─────────────────────────────────────────────────────────────
 
 def _fmtb(n):
@@ -80,6 +77,9 @@ input[type=file]{width:100%;padding:.4rem 0;font-size:.9rem}
 .tab.active{background:#2563eb;color:#fff;border-color:#2563eb}
 .pane{display:none}.pane.active{display:block}
 .hint{font-size:.8rem;color:#6b7280;margin-top:.35rem}
+.check-row{display:flex;align-items:center;gap:.5rem;font-weight:400;margin-top:1rem;cursor:pointer;font-size:.9rem;color:#374151}
+.check-row input{width:auto;accent-color:#2563eb}
+.hint-inline{color:#6b7280;font-size:.8rem}
 button[type=submit]{margin-top:1rem;padding:.5rem 1.5rem;background:#2563eb;color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:.95rem;font-weight:600}
 button[type=submit]:hover{background:#1d4ed8}
 button[type=submit]:disabled{background:#93c5fd;cursor:not-allowed}
@@ -113,6 +113,12 @@ details.warn-acc summary::after{content:"▸";font-size:.85rem}
 details.warn-acc[open] summary::after{content:"▾"}
 details.warn-acc summary::-webkit-details-marker{display:none}
 .warn-body{padding:0 1.5rem 1.25rem}
+/* progress */
+.prog-label{font-size:.9rem;color:#374151;margin-bottom:.6rem}
+.prog-count{font-weight:600;color:#2563eb}
+.prog-bar-outer{height:8px;background:#e2e8f0;border-radius:4px;overflow:hidden;margin:.4rem 0 .5rem}
+.prog-bar-inner{height:100%;background:#2563eb;border-radius:4px;transition:width .15s ease}
+.prog-rule-name{font-family:monospace;font-size:.78rem;color:#64748b;min-height:1.2em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 /* util */
 .err-box{background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:1rem;color:#991b1b;margin-bottom:1rem}
 .big-box{background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:1rem;margin-bottom:1rem}
@@ -126,7 +132,7 @@ _FORM = """
     <button type="button" class="tab active" onclick="switchTab(0)">URL</button>
     <button type="button" class="tab"        onclick="switchTab(1)">Upload file</button>
   </div>
-  <form method="post" action="/validate" enctype="multipart/form-data" onsubmit="return onSubmit(this)">
+  <form id="val-form" onsubmit="return doValidate(this)">
     <div class="pane active" id="p0">
       <label for="url">HTTPS or S3 URL</label>
       <input type="text" name="url" id="url"
@@ -140,6 +146,10 @@ _FORM = """
       <p class="hint">Max 250 MB. Larger files: use the
          <a href="https://github.com/okohlbacher/mzPeakValidator" target="_blank">CLI tool</a>.</p>
     </div>
+    <label class="check-row" title="Full data-column scans; slower but finds value-level issues">
+      <input type="checkbox" id="deep" name="deep" value="1">
+      <span>Deep validation <span class="hint-inline">(includes full data-column scans)</span></span>
+    </label>
     <button type="submit" id="btn">Validate</button>
   </form>
 </div>
@@ -153,22 +163,90 @@ function switchTab(n) {
   document.querySelectorAll('.tab').forEach(function(t,i){t.classList.toggle('active',i===n);});
   document.querySelectorAll('.pane').forEach(function(p,i){p.classList.toggle('active',i===n);});
 }
-function onSubmit(form) {
-  var url  = (document.getElementById('url').value  || '').trim();
-  var file = document.getElementById('file').files[0];
-  if (activeTab === 0 && !url)  { alert('Please enter a URL.'); return false; }
-  if (activeTab === 1 && !file) { alert('Please choose a file.'); return false; }
-  if (activeTab === 0) document.getElementById('file').disabled = true;
-  if (activeTab === 1) document.getElementById('url').disabled  = true;
+
+function progressHTML(n, total, rule) {
+  var pct = total ? Math.round(n / total * 100) : 0;
+  var label = total ? (n + ' / ' + total + ' checks') : 'Starting…';
+  return '<div class="card">' +
+    '<div class="prog-label">Validating… <span class="prog-count">' + label + '</span></div>' +
+    '<div class="prog-bar-outer"><div class="prog-bar-inner" style="width:' + pct + '%"></div></div>' +
+    '<div class="prog-rule-name">' + (rule ? rule.replace(/&/g,'&amp;').replace(/</g,'&lt;') : '&nbsp;') + '</div>' +
+    '</div>';
+}
+
+function doValidate(form) {
+  var url  = (document.getElementById('url').value || '').trim();
+  var fi   = document.getElementById('file');
+  var deep = document.getElementById('deep').checked;
+  if (activeTab === 0 && !url)        { alert('Please enter a URL.'); return false; }
+  if (activeTab === 1 && !fi.files[0]){ alert('Please choose a file.'); return false; }
+
   var btn = document.getElementById('btn');
   btn.disabled = true; btn.textContent = 'Validating…';
-  return true;
+
+  var rs = document.getElementById('result-section');
+  rs.innerHTML = progressHTML(0, null, '');
+  rs.scrollIntoView({behavior:'smooth', block:'nearest'});
+
+  var fd = new FormData();
+  if (deep) fd.append('deep', '1');
+  if (activeTab === 0) {
+    fd.append('url', url);
+  } else {
+    fd.append('file', fi.files[0], fi.files[0].name);
+  }
+
+  function done(html) {
+    rs.innerHTML = html;
+    btn.disabled = false; btn.textContent = 'Validate';
+    rs.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+
+  fetch('/validate', {method:'POST', body:fd})
+    .then(function(resp) {
+      var reader = resp.body.getReader();
+      var dec    = new TextDecoder();
+      var buf    = '';
+      function pump() {
+        return reader.read().then(function(chunk) {
+          if (chunk.done) return;
+          buf += dec.decode(chunk.value, {stream:true});
+          var pos;
+          while ((pos = buf.indexOf('\\n\\n')) !== -1) {
+            var block = buf.slice(0, pos);
+            buf = buf.slice(pos + 2);
+            var evType = 'message', data = '';
+            block.split('\\n').forEach(function(line) {
+              if (line.slice(0,7) === 'event: ') evType = line.slice(7).trim();
+              if (line.slice(0,6) === 'data: ') data  = line.slice(6);
+            });
+            if (!data) continue;
+            try {
+              var ev = JSON.parse(data);
+              if (evType === 'progress') {
+                rs.innerHTML = progressHTML(ev.n, ev.total, ev.rule || '');
+              } else if (evType === 'result') {
+                done(ev.html); return;
+              }
+            } catch(e) {}
+          }
+          return pump();
+        });
+      }
+      return pump();
+    })
+    .catch(function(e) {
+      done('<div class="err-box"><strong>Error:</strong> ' +
+           e.message.replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>');
+    });
+
+  return false;
 }
 </script>
 """
 
 
-def _page(body: str) -> str:
+def _page(body: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -181,7 +259,8 @@ def _page(body: str) -> str:
 <div class="wrap">
 <h1>mzPeak Validator</h1>
 <p class="sub">Check a <code>.mzpeak</code> archive against the HUPO-PSI specification.</p>
-{body}
+<div id="form-section">{_FORM}</div>
+<div id="result-section">{body}</div>
 <footer>
   <a href="https://github.com/okohlbacher/mzPeakValidator" target="_blank">mzPeakValidator</a>
   &nbsp;·&nbsp; profile mzpeak-0.9
@@ -306,22 +385,20 @@ def _result_html(result: dict) -> str:
         + verdict_html
         + err_html
         + warn_html
-        + _FORM
     )
 
 
-def _err(msg: str) -> str:
-    return f'<div class="err-box"><strong>Error:</strong> {escape(msg)}</div>' + _FORM
+def _err_html(msg: str) -> str:
+    return f'<div class="err-box"><strong>Error:</strong> {escape(msg)}</div>'
 
 
-_TOO_LARGE = (
+_TOO_LARGE_HTML = (
     '<div class="big-box">'
     '<strong>File exceeds the 250 MB web limit.</strong><br>'
     'For large archives use the <a href="https://github.com/okohlbacher/mzPeakValidator"'
     ' target="_blank">mzPeak Validator CLI</a>:<br>'
     '<code>pip install mzpeak-validator &amp;&amp; mzpeak-validate archive.mzpeak</code>'
     '</div>'
-    + _FORM
 )
 
 
@@ -329,7 +406,7 @@ _TOO_LARGE = (
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return _page(_FORM)
+    return _page()
 
 
 @app.get("/health")
@@ -337,41 +414,80 @@ async def health():
     return {"status": "ok"}
 
 
-@app.post("/validate", response_class=HTMLResponse)
+@app.post("/validate")
 async def validate(
     request: Request,
     url:  str        = Form(default=""),
     file: UploadFile = File(default=None),
+    deep: str        = Form(default=""),
 ):
+    quick = not bool(deep)   # deep="" → quick mode (default); deep="1" → full scan
+
     path = None
     try:
         url = (url or "").strip()
         if url:
             parsed = urlparse(url)
-            if parsed.scheme in ("s3", "http", "https"):
-                # Stream directly via HTTP range requests — no download, no temp file, no size limit
-                result = await _validate_remote(url)
-                return _page(_result_html(result))
-            else:
+            if parsed.scheme not in ("s3", "http", "https"):
                 return HTMLResponse(
-                    _page(_err(f"Unsupported URL scheme '{parsed.scheme}'. Use https:// or s3://")),
+                    _page(_err_html(f"Unsupported URL scheme '{parsed.scheme}'. Use https:// or s3://")),
                     status_code=400,
                 )
+            target = url
         elif file and file.filename:
             path = await _save_upload(request, file)
+            target = path
         else:
-            return HTMLResponse(_page(_err("Please provide a URL or upload a file.")), status_code=400)
-
-        result = await asyncio.get_event_loop().run_in_executor(None, run, path)
-        return _page(_result_html(result))
-
+            return HTMLResponse(_page(_err_html("Please provide a URL or upload a file.")), status_code=400)
     except _TooLarge:
-        return HTMLResponse(_page(_TOO_LARGE), status_code=413)
-    except Exception as exc:
-        return HTMLResponse(_page(_err(str(exc))), status_code=500)
-    finally:
-        if path:
-            Path(path).unlink(missing_ok=True)
+        return HTMLResponse(_page(_TOO_LARGE_HTML), status_code=413)
+
+    # Stream SSE: progress events while the validator runs, then a final result event.
+    loop = asyncio.get_event_loop()
+    q: asyncio.Queue = asyncio.Queue()
+    result_holder: list = [None]
+    error_holder:  list = [None]
+
+    def _cb(event: dict) -> None:
+        loop.call_soon_threadsafe(q.put_nowait, event)
+
+    def _worker() -> None:
+        try:
+            result_holder[0] = run(target, quick=quick, progress_cb=_cb)
+        except Exception as e:
+            error_holder[0] = e
+        finally:
+            loop.call_soon_threadsafe(q.put_nowait, None)  # sentinel
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+
+    async def _generate():
+        try:
+            while True:
+                ev = await q.get()
+                if ev is None:
+                    break
+                yield f"event: progress\ndata: {json.dumps(ev)}\n\n"
+
+            t.join(timeout=10)
+
+            if error_holder[0] is not None:
+                e = error_holder[0]
+                html = _TOO_LARGE_HTML if isinstance(e, _TooLarge) else _err_html(str(e))
+            else:
+                html = _result_html(result_holder[0])
+
+            yield f"event: result\ndata: {json.dumps({'html': html})}\n\n"
+        finally:
+            if path:
+                Path(path).unlink(missing_ok=True)
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 if __name__ == "__main__":
