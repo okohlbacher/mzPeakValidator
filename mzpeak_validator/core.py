@@ -17,7 +17,7 @@ Usage (installed console script, or `python -m mzpeak_validator`):
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """
-import argparse, gzip, hashlib, json, re, struct, sys, tempfile, threading, zipfile
+import argparse, functools, gzip, hashlib, io, json, mmap as _mmap, re, struct, sys, tempfile, threading, zipfile
 from pathlib import Path
 
 try:
@@ -64,7 +64,10 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.10"         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
+CATALOG_VERSION = "1.10"
+_LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
+                                    # first data access; the mmap-backed _LocalZipMemberFile is kept
+                                    # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 _SUMMARY_RULE = {"id": "archive_summary", "primitive": "archive_summary", "recovery": "none"}
@@ -218,14 +221,59 @@ class _RangeFile:
     def closed(self): return False
     def close(self): pass
 
+class _LocalZipMemberFile:
+    """Seekable view of a STORED ZIP member via a memory-mapped ZIP file.
+    pyarrow reads the Parquet footer (last few KB) via seek/read without loading the full
+    member; data rows are paged in from the mmap only when iter_batches is called.
+    Thread-local _pos lets pyarrow's C++ thread pool issue parallel row-group reads safely."""
+    def __init__(self, mm, start, size):
+        self._mm, self._start, self._size = mm, start, size
+        self._tls = threading.local()
+
+    @property
+    def _pos(self):
+        try: return self._tls.pos
+        except AttributeError: self._tls.pos = 0; return 0
+
+    @_pos.setter
+    def _pos(self, v): self._tls.pos = v
+
+    def read(self, n=-1):
+        if n < 0: n = self._size - self._pos
+        n = min(n, self._size - self._pos)
+        if n <= 0: return b""
+        data = bytes(self._mm[self._start + self._pos:self._start + self._pos + n])
+        self._pos += len(data)
+        return data
+
+    def seek(self, pos, whence=0):
+        if whence == 0: self._pos = pos
+        elif whence == 1: self._pos += pos
+        elif whence == 2: self._pos = self._size + pos
+        self._pos = max(0, min(self._pos, self._size))
+        return self._pos
+
+    def tell(self): return self._pos
+    def readable(self): return True
+    def seekable(self): return True
+    def writable(self): return False
+    @property
+    def closed(self): return False
+    def close(self): pass
+
 # ------------------------------------------------------------------------ archive
 class Archive:
     """An mzPeak archive (zip or directory) exposing files, parquet schemas and columns."""
     def __init__(self, path):
         self.path = Path(str(path))
         self._tmp = None
+        self._is_remote = False          # True only for HTTP/S3 mode
+        self._zip = None                 # ZipFile kept open for lazy local-ZIP member access
+        self._zip_fh = None              # raw file handle backing _zip_mm
+        self._zip_mm = None              # mmap of the raw ZIP; provides seek/read for _LocalZipMemberFile
+        self.root = None                 # None = no extracted root (remote OR local-ZIP mode)
         self._pf, self._col = {}, {}
-        self._lock = threading.Lock()   # guards cache write-backs only; I/O runs outside
+        self._lock = threading.Lock()    # guards cache write-backs only; I/O runs outside
         # Remote streaming mode: no local extraction; range requests per member.
         # s3:// → convert to presigned HTTPS URL via boto3, then same path as http(s)://.
         uri = str(path)
@@ -243,25 +291,32 @@ class Archive:
         if uri.startswith(("http://", "https://")):
             self._init_remote(uri)
             return
-        try:                                          # any failure after mkdtemp must not leak the tempdir
+        try:
             if self.path.is_dir():
-                self.root = self.path
+                self.root = self.path    # directory mode: members read directly from filesystem
             else:
-                self._tmp = tempfile.mkdtemp(prefix="mzpeak_val_")
+                # Local ZIP mode: bomb check, then memory-map for zero-copy lazy member access.
+                # Members are never extracted to disk; _LocalZipMemberFile serves Parquet reads
+                # directly from the mmap. This means: (a) no temp-dir write overhead, (b) the
+                # OS only pages in the bytes actually read (footer for --quick, full data for scans).
+                # Trade-off: CRC verification is bypassed for Parquet members (pyarrow catches
+                # structural corruption via its own Parquet column checksums; obvious truncation
+                # raises immediately on footer read).
                 with zipfile.ZipFile(self.path) as z:
                     comp = sum(i.compress_size for i in z.infolist())
                     uncomp = sum(i.file_size for i in z.infolist())
                     # mzPeak MUST store members uncompressed (ratio ~1); a large, highly-inflating
-                    # archive is a zip bomb, not a conformant file — refuse before extracting.
+                    # archive is a zip bomb, not a conformant file — refuse before opening.
                     if uncomp > 100_000_000 and comp and uncomp / comp > 50:
-                        raise ValueError(f"refusing to extract: {uncomp} bytes uncompressed vs {comp} "
+                        raise ValueError(f"refusing to open: {uncomp} bytes uncompressed vs {comp} "
                                          f"compressed ({uncomp / comp:.0f}x) — mzPeak members must be stored uncompressed")
-                    z.extractall(self._tmp)
-                self.root = Path(self._tmp)
-            idx = self.root / "mzpeak_index.json"
+                self._zip = zipfile.ZipFile(self.path)
+                self._zip_fh = open(self.path, "rb")
+                self._zip_mm = _mmap.mmap(self._zip_fh.fileno(), 0, access=_mmap.ACCESS_READ)
+            # Read the index immediately — it is always tiny and needed for every rule.
             self._index_utf8_error = False
-            if idx.exists():
-                raw = idx.read_bytes()
+            raw = self._read_raw_member("mzpeak_index.json")
+            if raw is not None:
                 try:
                     self.index = json.loads(raw.decode("utf-8"))
                 except UnicodeDecodeError:
@@ -273,6 +328,15 @@ class Archive:
             self.cleanup()
             raise
 
+    def _read_raw_member(self, name):
+        """Read raw bytes of a member; used only in __init__ before mode branches exist."""
+        if self._zip is not None:
+            return self._zip.read(name) if name in self._zip.namelist() else None
+        if self.root is not None:
+            p = self.root / name
+            return p.read_bytes() if p.exists() else None
+        return None
+
     def _init_remote(self, url):
         """Set up remote streaming mode (HTTPS or S3 presigned URL): enumerate the ZIP central
         directory via HTTP range requests, read mzpeak_index.json into memory; Parquet members
@@ -281,6 +345,7 @@ class Archive:
             import requests
         except ImportError as exc:
             raise ImportError(f"Remote streaming requires requests (pip install requests): {exc}")
+        self._is_remote = True
         self._remote_url = url
         self._remote_session = requests.Session()
         self._remote_members = _fetch_zip_members(self._remote_session, url)
@@ -318,6 +383,10 @@ class Archive:
         return self._remote_offsets[fn]
 
     def cleanup(self):
+        for obj in (self._zip, self._zip_mm, self._zip_fh):
+            if obj is not None:
+                try: obj.close()
+                except Exception: pass
         if self._tmp:
             import shutil; shutil.rmtree(self._tmp, ignore_errors=True)
 
@@ -326,7 +395,7 @@ class Archive:
         from the untrusted index, so a member must not be able to address files outside the archive."""
         if not rel:
             return None
-        if self.root is None:       # remote mode — trust membership check instead
+        if self.root is None:       # remote or local-ZIP mode — trust membership check instead
             return None
         root = self.root.resolve()
         full = (self.root / rel).resolve()
@@ -337,18 +406,25 @@ class Archive:
         return full
 
     def _is_file(self, rel):
-        if self.root is None:       # remote mode
+        if self._is_remote:         # remote mode
             return bool(rel) and rel in self._remote_members
-        full = self._contained(rel)
+        if self._zip is not None:   # local-ZIP mode
+            return bool(rel) and rel in self._zip.namelist()
+        full = self._contained(rel) # directory mode
         return full is not None and full.is_file()
 
     def _fname(self, name):
         """Resolve a logical table name to a contained file ('spectra_data' -> 'spectra_data.parquet')."""
-        if self.root is None:       # remote mode
+        if self._is_remote:         # remote mode
             if name in self._remote_members: return name
             if name + ".parquet" in self._remote_members: return name + ".parquet"
             return name
-        if name.endswith(".parquet") and self._is_file(name):
+        if self._zip is not None:   # local-ZIP mode
+            nl = self._zip.namelist()
+            if name in nl: return name
+            if name + ".parquet" in nl: return name + ".parquet"
+            return name
+        if name.endswith(".parquet") and self._is_file(name): # directory mode
             return name
         if self._is_file(name + ".parquet"):
             return name + ".parquet"
@@ -359,13 +435,13 @@ class Archive:
 
     def has_member(self, name):
         """Is `name` a present, archive-contained raw member (not parquet-resolved)?"""
-        if self.root is None:       # remote mode
-            return name in self._remote_members
+        if self._is_remote:         return name in self._remote_members
+        if self._zip is not None:   return name in self._zip.namelist()
         return self._is_file(name)
 
     def read_member(self, name, n=None):
         """Raw bytes of an archive-contained member (first `n` bytes if given)."""
-        if self.root is None:       # remote mode
+        if self._is_remote:         # remote mode
             if name not in self._remote_members:
                 raise ValueError(f"refusing to read member outside the archive: {name!r}")
             zi = self._remote_members[name]
@@ -378,25 +454,76 @@ class Archive:
             resp.raise_for_status()
             data = resp.content
             return data if n is None else data[:n]
-        full = self._contained(name)
+        if self._zip is not None:   # local-ZIP mode
+            if name not in self._zip.namelist():
+                raise ValueError(f"refusing to read member outside the archive: {name!r}")
+            data = self._zip.read(name)
+            return data if n is None else data[:n]
+        full = self._contained(name) # directory mode
         if full is None:
             raise ValueError(f"refusing to read member outside the archive: {name!r}")
         with open(full, "rb") as fh:
             return fh.read() if n is None else fh.read(n)
+
+    def _local_data_offset(self, fn):
+        """Byte offset where a STORED member's data begins in the raw ZIP file.
+        Reads 30 bytes from the mmap to parse the local file header."""
+        zi = self._zip.getinfo(fn)
+        hdr = bytes(self._zip_mm[zi.header_offset:zi.header_offset + 30])
+        fname_len, extra_len = struct.unpack_from("<HH", hdr, 26)
+        return zi.header_offset + 30 + fname_len + extra_len
+
+    def _local_extracted_path(self, fn):
+        """Extract a large STORED ZIP member to a temp file on first data access.
+        After extraction, upgrades the pf() cache to the file-backed ParquetFile so subsequent
+        data reads (iter_batches, column) use the fast OS-buffered path instead of mmap.
+        Thread-safe: reads from the mmap (no seek races) and uses atomic temp-rename."""
+        if self._tmp is None:
+            with self._lock:
+                if self._tmp is None:
+                    self._tmp = tempfile.mkdtemp(prefix="mzpeak_val_")
+        dest = Path(self._tmp) / fn
+        if dest.exists():
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        # Read directly from the mmap — thread-safe, no ZipFile seek races.
+        zi = self._zip.getinfo(fn)
+        off = self._local_data_offset(fn)
+        data = bytes(self._zip_mm[off:off + zi.file_size])
+        tmp_dest = Path(str(dest) + f".{threading.get_ident()}.tmp")
+        tmp_dest.write_bytes(data)
+        try:
+            tmp_dest.rename(dest)  # atomic on POSIX; safe if two threads race
+        except Exception:
+            if not dest.exists():
+                raise
+            try: tmp_dest.unlink()
+            except Exception: pass
+        # Upgrade the pf() cache from mmap-backed to file-backed for efficient data reads.
+        with self._lock:
+            self._pf[fn] = pq.ParquetFile(dest)
+        return dest
 
     def pf(self, name):
         fn = self._fname(name)
         pf_ = self._pf.get(fn)          # fast path — no lock; CPython dict.get is GIL-safe
         if pf_ is not None:
             return pf_
-        # Slow path: footer read runs outside the lock so threads on different files go parallel.
-        # Two threads may both create a ParquetFile for the same fn; that's fine — both read the
-        # same footer bytes, setdefault keeps the first one and discards the duplicate.
-        if self.root is None:
+        # Slow path: I/O runs outside the lock so concurrent prefetch threads go parallel.
+        # Two threads may both create a ParquetFile for the same fn; setdefault keeps the first.
+        if self._is_remote:             # remote mode: range-request backed
             zi = self._remote_members[fn]
             off = self._remote_data_offset(fn, zi)
             fresh = pq.ParquetFile(_RangeFile(self._remote_session, self._remote_url, off, zi.file_size))
-        else:
+        elif self._zip is not None:     # local-ZIP mode: mmap-backed, footer-lazy
+            zi = self._zip.getinfo(fn)
+            if zi.compress_type == zipfile.ZIP_STORED:
+                off = self._local_data_offset(fn)
+                fresh = pq.ParquetFile(_LocalZipMemberFile(self._zip_mm, off, zi.file_size))
+            else:
+                # Compressed member (non-conformant for mzPeak): fall back to in-memory read
+                fresh = pq.ParquetFile(io.BytesIO(self._zip.read(fn)))
+        else:                           # directory mode: read from filesystem
             fresh = pq.ParquetFile(self.root / fn)
         with self._lock:
             self._pf.setdefault(fn, fresh)
@@ -434,11 +561,17 @@ class Archive:
         top_key = (name, top)
         col = self._col.get(top_key)
         if col is None:
-            # Column read (disk or HTTP) runs WITHOUT holding any lock.
-            if self.root is None:
-                tbl = self.pf(name).read(columns=[top])
-            else:
-                tbl = pq.read_table(self.root / self._fname(name), columns=[top])
+            # For large local-ZIP members, extract to disk first so pyarrow reads from a clean
+            # Parquet file (OS read-ahead) rather than the mmap (scattered page faults).
+            # _local_extracted_path() upgrades pf() cache, so pf(name) below is file-backed.
+            if self._zip is not None:
+                fn_key = self._fname(name)
+                try:
+                    if self._zip.getinfo(fn_key).file_size > _LARGE_MEMBER:
+                        self._local_extracted_path(fn_key)
+                except KeyError:
+                    pass
+            tbl = self.pf(name).read(columns=[top])
             fresh = tbl.column(top).combine_chunks()
             with self._lock:
                 self._col.setdefault(top_key, fresh)
@@ -464,6 +597,16 @@ class Archive:
                 end = min(start + bs, n)
                 yield tuple(a[start:end] for a in arrs)
             return
+        # For large local-ZIP members, ensure extraction so pyarrow streams from disk (fast)
+        # rather than the mmap (slow for large sequential reads due to page-fault overhead).
+        # _local_extracted_path() upgrades pf() cache, so pf(name).iter_batches below is fast.
+        if self._zip is not None:
+            fn_key = self._fname(name)
+            try:
+                if self._zip.getinfo(fn_key).file_size > _LARGE_MEMBER:
+                    self._local_extracted_path(fn_key)
+            except KeyError:
+                pass
         for batch in self.pf(name).iter_batches(
                 batch_size=batch_size or BATCH_SIZE, columns=list(dotted_cols),
                 use_threads=True):
@@ -553,9 +696,14 @@ def _archive_info(ar):
                 facet_data[top]["uncompressed_bytes"] += cc.total_uncompressed_size
 
         fn = ar._fname(name)
-        if ar.root is None:         # remote mode: file size from ZIP central directory
+        if ar._is_remote:               # remote mode
             file_size = ar._remote_members[fn].file_size if fn in ar._remote_members else 0
-        else:
+        elif ar._zip is not None:       # local-ZIP mode
+            try:
+                file_size = ar._zip.getinfo(fn).file_size
+            except Exception:
+                file_size = 0
+        else:                           # directory mode
             file_size = (ar.root / fn).stat().st_size
         result.append({
             "name": name,
@@ -1572,16 +1720,20 @@ DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_cont
              "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates",
              "chunk_bounds", "aux_arrays"}
 
+# -------------------------------------------------------------------------------- profile cache
+@functools.lru_cache(maxsize=8)
+def _load_profile(profile_dir_str):
+    """Parse and cache a Profile by its directory path.
+    Profile objects are immutable after construction; caching is safe for the process lifetime.
+    Saves ~35 ms of OBO parsing per validation in server / batch usage."""
+    return Profile(Path(profile_dir_str))
+
 # -------------------------------------------------------------------------------- run
 def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, medium=False):
-    from collections import defaultdict
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-
     ar = Archive(archive_path)
-    ar._medium = medium
     try:
         prof_dir, note = resolve_profile(ar, profiles_root, explicit=profile)
-        prof = Profile(prof_dir)
+        prof = _load_profile(str(prof_dir))
         rep = Report(prof, archive_path)
         rep.archive_info = _archive_info(ar)
         for fi in rep.archive_info:
@@ -1638,39 +1790,29 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
             except Exception as e:
                 rep.add(rule, "error", f"rule '{rule.get('id')}' raised {type(e).__name__}: {e}")
 
-        # Three primitives are "cross-file": they declare params["file"]=X but also internally
-        # read a second file (ref_file / count_file, typically spectra_metadata). Running them in
-        # a per-X thread would race against the metadata thread on the shared pq.ParquetFile.
-        # Route them to sequential execution regardless of params["file"].
-        _CROSS_FILE = {"foreign_key", "count_sum_equals_rows", "grouped_count_equals"}
+        ar._medium = medium
 
-        # Rules that name a single Parquet file in params["file"] and are NOT cross-file are
-        # fully independent of rules for other files — run each file's group in a thread
-        # (I/O-bound; pyarrow releases the GIL during column reads).
-        # All other rules access index-level data or multiple files; run first, sequentially,
-        # so the archive index and pf() cache are warm before threads start.
-        global_rules = [(r, fn, p) for r, fn, p in prepared
-                        if not r.get("params", {}).get("file") or r.get("primitive") in _CROSS_FILE]
-        file_groups: "dict[str, list]" = defaultdict(list)
-        for r, fn, p in prepared:
-            if r.get("params", {}).get("file") and r.get("primitive") not in _CROSS_FILE:
-                file_groups[r["params"]["file"]].append((r, fn, p))
+        # Column prefetch for explicitly-requested --medium mode: warm the column() cache
+        # in parallel before the sequential rule loop so multiple DATA_SCAN passes share I/O.
+        # Skipped by default (auto-medium was removed: reading the full top-level struct per
+        # column() call is wasteful when a rule only needs one nested leaf field — the streaming
+        # iter_batches path, which pyarrow projects to the leaf, is cheaper in the common case).
+        if medium and not quick:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            prefetch = list({(params["file"], params["column"])
+                             for r, fn, params in prepared
+                             if r.get("primitive") in DATA_SCAN
+                             and params.get("file") and params.get("column")
+                             and ar.has_file(params["file"])})
+            if len(prefetch) > 1:
+                with ThreadPoolExecutor(max_workers=min(len(prefetch), 4)) as pool:
+                    futs = [pool.submit(ar.column, f, c) for f, c in prefetch]
+                    for fut in as_completed(futs):
+                        try: fut.result()
+                        except Exception: pass
 
-        for rule, fn, params in global_rules:
+        for rule, fn, params in prepared:
             _run_rule(rule, fn, params)
-
-        if len(file_groups) <= 1:
-            for rules in file_groups.values():
-                for rule, fn, params in rules:
-                    _run_rule(rule, fn, params)
-        else:
-            # ponytail: 4 workers cap keeps memory and HTTP connections predictable
-            with ThreadPoolExecutor(max_workers=min(len(file_groups), 4)) as pool:
-                futs = [pool.submit(
-                            lambda rules=rules: [_run_rule(r, fn, p) for r, fn, p in rules])
-                        for rules in file_groups.values()]
-                for fut in as_completed(futs):
-                    fut.result()   # propagate any unexpected exception
 
         return rep.to_dict()
     finally:
