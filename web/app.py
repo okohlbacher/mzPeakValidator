@@ -444,7 +444,7 @@ async def validate(
         return HTMLResponse(_page(_TOO_LARGE_HTML), status_code=413)
 
     # Stream SSE: progress events while the validator runs, then a final result event.
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     q: asyncio.Queue = asyncio.Queue()
     result_holder: list = [None]
     error_holder:  list = [None]
@@ -466,7 +466,11 @@ async def validate(
     async def _generate():
         try:
             while True:
-                ev = await q.get()
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"  # flushes nginx proxy buffer; ignored by JS
+                    continue
                 if ev is None:
                     break
                 yield f"event: progress\ndata: {json.dumps(ev)}\n\n"
