@@ -29,7 +29,7 @@ except ImportError:
     sys.path.insert(0, str(Path(__file__).parent.parent))
     from mzpeak_validator import run, __version__
 
-MAX_BYTES = 250 << 20  # 250 MiB
+MAX_BYTES = int(os.environ.get("MZPV_MAX_BYTES", str(250 << 20)))  # default 250 MiB
 CHUNK     = 1 << 20
 
 app = FastAPI(title="mzPeak Validator")
@@ -213,8 +213,15 @@ function doValidate(form) {
     rs.scrollIntoView({behavior:'smooth', block:'nearest'});
   }
 
-  fetch('/validate', {method:'POST', body:fd})
+  fetch('validate', {method:'POST', body:fd})
     .then(function(resp) {
+      var ct = resp.headers.get('content-type') || '';
+      if (!resp.ok || !ct.includes('text/event-stream')) {
+        return resp.text().then(function(t) {
+          done('<div class="err-box"><strong>Server error ' + resp.status +
+               '</strong><br>' + t.slice(0,200).replace(/&/g,'&amp;').replace(/</g,'&lt;') + '</div>');
+        });
+      }
       var reader = resp.body.getReader();
       var dec    = new TextDecoder();
       var buf    = '';
@@ -263,6 +270,7 @@ def _page(body: str = "") -> str:
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,">
 <title>mzPeak Validator</title>
 <style>{_STYLE}</style>
 </head>
