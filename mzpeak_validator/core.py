@@ -657,9 +657,10 @@ def _archive_info(ar):
     candidates = ["spectra_metadata", "spectra_data", "spectra_peaks",
                   "chromatograms_metadata", "chromatograms_data"]
     for n in list(idx_files):
-        base = n[:-8] if n.endswith(".parquet") else n
-        if base not in candidates:
-            candidates.append(base)
+        if n.endswith(".parquet"):           # non-Parquet index entries (vendor files, images, …)
+            base = n[:-8]                   # are not Parquet tables — skip to avoid spurious
+            if base not in candidates:      # Range GETs on archives with many vendor members
+                candidates.append(base)
 
     result = []
     for name in candidates:
@@ -1735,6 +1736,8 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
         prof_dir, note = resolve_profile(ar, profiles_root, explicit=profile)
         prof = _load_profile(str(prof_dir))
         rep = Report(prof, archive_path)
+        if progress_cb:
+            progress_cb({"n": 0, "total": None, "rule": "reading archive"})
         rep.archive_info = _archive_info(ar)
         for fi in rep.archive_info:
             et = fi.get("entity_type") or ""

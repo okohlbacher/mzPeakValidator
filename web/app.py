@@ -148,7 +148,7 @@ _FORM = """
     </div>
     <label class="check-row" title="Full data-column scans; slower but finds value-level issues">
       <input type="checkbox" id="deep" name="deep" value="1">
-      <span>Deep validation <span class="hint-inline">(includes full data-column scans)</span></span>
+      <span>Deep validation <span class="hint-inline">(includes full data-column scans — significantly slower!)</span></span>
     </label>
     <button type="submit" id="btn">Validate</button>
   </form>
