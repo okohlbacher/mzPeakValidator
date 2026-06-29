@@ -17,7 +17,7 @@ Usage (installed console script, or `python -m mzpeak_validator`):
 
 Exit: 0 if no errors, 1 if any error-level finding, 2 on engine failure.
 """
-import argparse, gzip, hashlib, json, re, struct, sys, tempfile, zipfile
+import argparse, gzip, hashlib, json, re, struct, sys, tempfile, threading, zipfile
 from pathlib import Path
 
 try:
@@ -177,7 +177,18 @@ class _RangeFile:
     targeted Range GET so memory is O(read_size), not O(file_size)."""
     def __init__(self, session, url, data_offset, data_size):
         self._session, self._url = session, url
-        self._start, self._size, self._pos = data_offset, data_size, 0
+        self._start, self._size = data_offset, data_size
+        # ponytail: thread-local pos lets pyarrow's C++ thread pool issue parallel row-group GETs
+        # without seek/read races; each thread maintains its own cursor independently.
+        self._tls = threading.local()
+
+    @property
+    def _pos(self):
+        try: return self._tls.pos
+        except AttributeError: self._tls.pos = 0; return 0
+
+    @_pos.setter
+    def _pos(self, v): self._tls.pos = v
 
     def read(self, n=-1):
         if n < 0: n = self._size - self._pos
@@ -214,6 +225,7 @@ class Archive:
         self.path = Path(str(path))
         self._tmp = None
         self._pf, self._col = {}, {}
+        self._lock = threading.Lock()   # guards cache write-backs only; I/O runs outside
         # Remote streaming mode: no local extraction; range requests per member.
         # s3:// → convert to presigned HTTPS URL via boto3, then same path as http(s)://.
         uri = str(path)
@@ -288,18 +300,21 @@ class Archive:
     def _remote_data_offset(self, fn, zi):
         """Absolute byte offset of member data (past the local file header). Cached per member —
         costs one 30-byte range request the first time a Parquet file is opened."""
-        if fn not in self._remote_offsets:
-            start = zi.header_offset
-            resp = self._remote_session.get(
-                self._remote_url, headers={"Range": f"bytes={start}-{start + 29}"}, timeout=30)
-            resp.raise_for_status()
-            raw = resp.content
-            if len(raw) < 30:
-                raise ValueError(f"truncated local file header for remote member {fn!r}")
-            # Local file header: sig(4) ver(2) flags(2) method(2) time(2) date(2)
-            #   crc32(4) comp_size(4) uncomp_size(4) fname_len(2) extra_len(2)
-            fname_len, extra_len = struct.unpack_from("<HH", raw, 26)
-            self._remote_offsets[fn] = start + 30 + fname_len + extra_len
+        off = self._remote_offsets.get(fn)
+        if off is not None:
+            return off
+        start = zi.header_offset
+        resp = self._remote_session.get(
+            self._remote_url, headers={"Range": f"bytes={start}-{start + 29}"}, timeout=30)
+        resp.raise_for_status()
+        raw = resp.content
+        if len(raw) < 30:
+            raise ValueError(f"truncated local file header for remote member {fn!r}")
+        # Local file header: sig(4) ver(2) flags(2) method(2) time(2) date(2)
+        #   crc32(4) comp_size(4) uncomp_size(4) fname_len(2) extra_len(2)
+        fname_len, extra_len = struct.unpack_from("<HH", raw, 26)
+        with self._lock:
+            self._remote_offsets.setdefault(fn, start + 30 + fname_len + extra_len)
         return self._remote_offsets[fn]
 
     def cleanup(self):
@@ -371,14 +386,20 @@ class Archive:
 
     def pf(self, name):
         fn = self._fname(name)
-        if fn not in self._pf:
-            if self.root is None:   # remote mode
-                zi = self._remote_members[fn]
-                off = self._remote_data_offset(fn, zi)
-                self._pf[fn] = pq.ParquetFile(
-                    _RangeFile(self._remote_session, self._remote_url, off, zi.file_size))
-            else:
-                self._pf[fn] = pq.ParquetFile(self.root / fn)
+        pf_ = self._pf.get(fn)          # fast path — no lock; CPython dict.get is GIL-safe
+        if pf_ is not None:
+            return pf_
+        # Slow path: footer read runs outside the lock so threads on different files go parallel.
+        # Two threads may both create a ParquetFile for the same fn; that's fine — both read the
+        # same footer bytes, setdefault keeps the first one and discards the duplicate.
+        if self.root is None:
+            zi = self._remote_members[fn]
+            off = self._remote_data_offset(fn, zi)
+            fresh = pq.ParquetFile(_RangeFile(self._remote_session, self._remote_url, off, zi.file_size))
+        else:
+            fresh = pq.ParquetFile(self.root / fn)
+        with self._lock:
+            self._pf.setdefault(fn, fresh)
         return self._pf[fn]
 
     def num_rows(self, name):
@@ -402,29 +423,50 @@ class Archive:
     def column(self, name, dotted):
         """Load a (<= 2-level) column as a flat pyarrow Array, cached.
         Top-level struct is cached under (name, top) so multiple sub-field accesses
-        (e.g. chunk.mz_chunk_start then chunk.intensity_chunk_start) read the file once."""
-        if (name, dotted) not in self._col:
-            top = dotted.split(".", 1)[0]
-            top_key = (name, top)
-            if top_key not in self._col:
-                if self.root is None:   # remote mode: read through pf() so _S3RangeFile handles I/O
-                    tbl = self.pf(name).read(columns=[top])
-                else:
-                    tbl = pq.read_table(self.root / self._fname(name), columns=[top])
-                self._col[top_key] = tbl.column(top).combine_chunks()
+        (e.g. chunk.mz_chunk_start then chunk.intensity_chunk_start) read the file once.
+        Thread-safe: I/O runs outside the lock; two threads racing on the same column may
+        both read it, but setdefault keeps exactly one copy and the duplicate is discarded."""
+        sub_key = (name, dotted)
+        result = self._col.get(sub_key)
+        if result is not None:
+            return result
+        top = dotted.split(".", 1)[0]
+        top_key = (name, top)
+        col = self._col.get(top_key)
+        if col is None:
+            # Column read (disk or HTTP) runs WITHOUT holding any lock.
+            if self.root is None:
+                tbl = self.pf(name).read(columns=[top])
+            else:
+                tbl = pq.read_table(self.root / self._fname(name), columns=[top])
+            fresh = tbl.column(top).combine_chunks()
+            with self._lock:
+                self._col.setdefault(top_key, fresh)
             col = self._col[top_key]
-            self._col[(name, dotted)] = col.field(dotted.split(".", 1)[1]) if "." in dotted else col
-        return self._col[(name, dotted)]
+        sub = col.field(dotted.split(".", 1)[1]) if "." in dotted else col
+        with self._lock:
+            self._col.setdefault(sub_key, sub)
+        return self._col[sub_key]
 
     def iter_batches(self, name, *dotted_cols, batch_size=None):
-        """Stream the requested columns as fixed-size row batches without caching.
+        """Stream the requested columns as fixed-size row batches.
         Each yield is a tuple of pyarrow Arrays, one per requested dotted column.
-        Passes dotted paths directly to PyArrow so only the requested struct sub-fields
-        are read — unused sub-fields (e.g. point.intensity, chunk.mz_chunk_list) are skipped."""
+        In --medium mode (ar._medium=True) the full columns are loaded via column() (cached),
+        so multiple DATA_SCAN primitives targeting the same file pay the I/O cost only once."""
         if not dotted_cols:
             return
+        if getattr(self, "_medium", False):
+            # Medium mode: serve from the column cache — zero redundant reads across primitives.
+            arrs = [self.column(name, d) for d in dotted_cols]
+            n = len(arrs[0]) if arrs else 0
+            bs = batch_size or BATCH_SIZE
+            for start in range(0, n, bs):
+                end = min(start + bs, n)
+                yield tuple(a[start:end] for a in arrs)
+            return
         for batch in self.pf(name).iter_batches(
-                batch_size=batch_size or BATCH_SIZE, columns=list(dotted_cols)):
+                batch_size=batch_size or BATCH_SIZE, columns=list(dotted_cols),
+                use_threads=True):
             yield tuple(
                 batch.column(d.split(".", 1)[0]).field(d.split(".", 1)[1])
                 if "." in d else batch.column(d)
@@ -635,6 +677,7 @@ class Report:
         self._seen = {}            # (ruleId, level, message) -> finding (dedup identical messages)
         self._n = {}               # ruleId -> distinct findings kept
         self._dropped = {}         # ruleId -> distinct findings suppressed past the cap
+        self._lock = threading.Lock()
         self.profile = profile.manifest.get("profile_id")
         self.cv_versions = {a["id"]: a.get("version") for a in profile.manifest.get("artifacts", [])
                             if a.get("role") == "cv"}
@@ -642,20 +685,21 @@ class Report:
         self.archive_info = None   # filled by run() via _archive_info()
 
     def add(self, rule, level, message, location=None, recovery=None, fix=None):
-        rid = rule.get("id")
-        key = (rid, level, message)
-        dup = self._seen.get(key)
-        if dup is not None:                       # identical message already reported -> just count it
-            dup["count"] += 1
-            return
-        if self._n.get(rid, 0) >= MAX_PER_RULE:   # too many distinct findings from one rule -> summarise later
-            self._dropped[rid] = self._dropped.get(rid, 0) + 1
-            return
-        f = {"ruleId": rid, "primitive": rule.get("primitive"), "level": level, "message": message,
-             "location": location or {}, "recovery": recovery if recovery is not None else rule.get("recovery", "none"),
-             "fix": fix if fix is not None else rule.get("fix"), "count": 1}
-        self.findings.append(f); self._seen[key] = f
-        self._n[rid] = self._n.get(rid, 0) + 1
+        with self._lock:
+            rid = rule.get("id")
+            key = (rid, level, message)
+            dup = self._seen.get(key)
+            if dup is not None:                       # identical message already reported -> just count it
+                dup["count"] += 1
+                return
+            if self._n.get(rid, 0) >= MAX_PER_RULE:   # too many distinct findings from one rule -> summarise later
+                self._dropped[rid] = self._dropped.get(rid, 0) + 1
+                return
+            f = {"ruleId": rid, "primitive": rule.get("primitive"), "level": level, "message": message,
+                 "location": location or {}, "recovery": recovery if recovery is not None else rule.get("recovery", "none"),
+                 "fix": fix if fix is not None else rule.get("fix"), "count": 1}
+            self.findings.append(f); self._seen[key] = f
+            self._n[rid] = self._n.get(rid, 0) + 1
 
     def to_dict(self):
         for rid, n in self._dropped.items():
@@ -1529,8 +1573,12 @@ DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_cont
              "chunk_bounds", "aux_arrays"}
 
 # -------------------------------------------------------------------------------- run
-def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
+def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, medium=False):
+    from collections import defaultdict
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     ar = Archive(archive_path)
+    ar._medium = medium
     try:
         prof_dir, note = resolve_profile(ar, profiles_root, explicit=profile)
         prof = Profile(prof_dir)
@@ -1555,8 +1603,12 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
         if catalog != CATALOG_VERSION:
             rep.add({"id": "catalog_version", "primitive": "catalog_version"}, "warning",
                     f"profile needs rule catalog {catalog}, engine implements {CATALOG_VERSION}")
+
+        # Pre-process rules into (rule, fn, params) triples, skipping unknowns / quick-skips.
+        prepared = []
         for rule in prof.rules:
-            prim, fn = rule.get("primitive"), PRIMITIVES.get(rule.get("primitive"))
+            prim = rule.get("primitive")
+            fn = PRIMITIVES.get(prim)
             if fn is None:
                 rep.add(rule, "warning", f"unknown primitive '{prim}' (catalog mismatch?)"); continue
             if quick and prim in DATA_SCAN:
@@ -1578,10 +1630,48 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False):
             elif prim == "cv_list_consistency":
                 params["_cv_versions"] = {a["id"]: a.get("version") for a in prof.manifest.get("artifacts", [])
                                           if a.get("role") == "cv"}
+            prepared.append((rule, fn, params))
+
+        def _run_rule(rule, fn, params):
             try:
                 fn(ar, rule, rep, params)
             except Exception as e:
                 rep.add(rule, "error", f"rule '{rule.get('id')}' raised {type(e).__name__}: {e}")
+
+        # Three primitives are "cross-file": they declare params["file"]=X but also internally
+        # read a second file (ref_file / count_file, typically spectra_metadata). Running them in
+        # a per-X thread would race against the metadata thread on the shared pq.ParquetFile.
+        # Route them to sequential execution regardless of params["file"].
+        _CROSS_FILE = {"foreign_key", "count_sum_equals_rows", "grouped_count_equals"}
+
+        # Rules that name a single Parquet file in params["file"] and are NOT cross-file are
+        # fully independent of rules for other files — run each file's group in a thread
+        # (I/O-bound; pyarrow releases the GIL during column reads).
+        # All other rules access index-level data or multiple files; run first, sequentially,
+        # so the archive index and pf() cache are warm before threads start.
+        global_rules = [(r, fn, p) for r, fn, p in prepared
+                        if not r.get("params", {}).get("file") or r.get("primitive") in _CROSS_FILE]
+        file_groups: "dict[str, list]" = defaultdict(list)
+        for r, fn, p in prepared:
+            if r.get("params", {}).get("file") and r.get("primitive") not in _CROSS_FILE:
+                file_groups[r["params"]["file"]].append((r, fn, p))
+
+        for rule, fn, params in global_rules:
+            _run_rule(rule, fn, params)
+
+        if len(file_groups) <= 1:
+            for rules in file_groups.values():
+                for rule, fn, params in rules:
+                    _run_rule(rule, fn, params)
+        else:
+            # ponytail: 4 workers cap keeps memory and HTTP connections predictable
+            with ThreadPoolExecutor(max_workers=min(len(file_groups), 4)) as pool:
+                futs = [pool.submit(
+                            lambda rules=rules: [_run_rule(r, fn, p) for r, fn, p in rules])
+                        for rules in file_groups.values()]
+                for fut in as_completed(futs):
+                    fut.result()   # propagate any unexpected exception
+
         return rep.to_dict()
     finally:
         ar.cleanup()
@@ -1594,9 +1684,12 @@ def main():
     ap.add_argument("--json", help="write the full JSON report to this path")
     ap.add_argument("--log", help="write the human-readable findings (errors/warnings/info) to this file")
     ap.add_argument("--quick", action="store_true", help="skip full-column data scans (metadata mode)")
+    ap.add_argument("--medium", action="store_true",
+                    help="cache columns in memory for faster multi-pass scans; uses ~2x archive RAM")
     a = ap.parse_args()
     try:
-        report = run(a.archive, profile=a.profile, profiles_root=a.profiles_dir, quick=a.quick)
+        report = run(a.archive, profile=a.profile, profiles_root=a.profiles_dir,
+                     quick=a.quick, medium=a.medium)
     except Exception as e:
         print(f"ERROR: {type(e).__name__}: {e}", file=sys.stderr); sys.exit(2)
     if a.json:
