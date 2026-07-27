@@ -2,6 +2,9 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak metadata data processing method list",
   "description": "Describe the JSON format of data processing method list",
+  "$meta": {
+    "summary": "file:schema/meta/data_processing.md"
+  },
   "type": "array",
   "items": {
     "$ref": "#/definitions/data_processing_method"

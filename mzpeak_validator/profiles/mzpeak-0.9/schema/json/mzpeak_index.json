@@ -19,7 +19,8 @@
       "properties": {
         "version": {
           "type": "string",
-          "description": "The mzPeak file format version"
+          "description": "The mzPeak file format version, formatted as a semantic version",
+          "pattern": "(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)"
         },
         "id": {
           "type": "string",
@@ -49,56 +50,6 @@
         },
         "run": {
           "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/ms_run.json"
-        },
-        "tof_calibration": {
-          "type": "object",
-          "description": "Reconstructs m/z from a stored integer TOF grid index for a time-of-flight grid layout.",
-          "additionalProperties": true,
-          "required": ["codec", "lossless"],
-          "properties": {
-            "codec": { "type": "string", "const": "tof-grid" },
-            "model": { "type": "string" },
-            "lossless": { "type": "string" },
-            "mz_from_tof_index": { "type": "string" },
-            "c0": { "type": "number" },
-            "c1": { "type": "number" },
-            "per_spectrum_columns": { "type": "array", "items": { "type": "string" } },
-            "calibrations": { "type": "object", "description": "Map of calibration-id to its calibration coefficients, selected per spectrum by tof_calibration_id.", "additionalProperties": { "type": "object" } },
-            "max_roundtrip_ppm": { "type": "number" }
-          }
-        },
-        "ims_calibration": {
-          "type": "object",
-          "description": "Reconstructs m/z from a stored integer TOF column for a Bruker timsTOF ims-compact run as (a + b*tof)^2.",
-          "additionalProperties": true,
-          "required": ["codec", "lossless"],
-          "properties": {
-            "codec": { "type": "string", "const": "ims-compact" },
-            "lossless": { "type": "string" },
-            "mz_from_tof": { "type": "string" },
-            "tof_encoding": { "type": "string" },
-            "a": { "type": "number" },
-            "b": { "type": "number" }
-          }
-        },
-        "vendor_files": {
-          "type": "array",
-          "description": "Manifest of the original vendor side-files: per file, embedded into vendor/ or dropped.",
-          "items": {
-            "type": "object",
-            "required": ["path", "action"],
-            "properties": {
-              "path": { "type": "string" },
-              "action": { "type": "string", "enum": ["embed", "drop"] },
-              "content_encoding": { "type": "string" },
-              "bytes": { "type": "integer", "minimum": 0 }
-            }
-          }
-        },
-        "vendor_metadata": {
-          "type": "object",
-          "description": "Run-level key-value metadata copied verbatim from the vendor container (e.g. Bruker GlobalMetadata).",
-          "additionalProperties": true
         }
       }
     }
@@ -115,19 +66,64 @@
         },
         "entity_type": {
           "type": "string",
-          "examples": ["spectrum", "chromatogram", "other", "proprietary"],
+          "examples": ["spectrum", "chromatogram", "other", "proprietary", "wavelength_spectrum"],
           "description": "The things being described in one facet or another by this file"
         },
         "data_kind": {
           "type": "string",
           "examples": [
-            "data arrays",
+            "data_arrays",
             "metadata",
             "peaks",
             "other",
             "proprietary"
           ],
           "description": "The facet of the thing being described in this file"
+        },
+        "column_mapping": {
+          "type": "array",
+          "items": {"$ref": "#/definitions/column_mapping"},
+          "description": "A list of Parquet column to controlled vocabulary term mappings"
+        },
+        "parameters": {
+          "type": "array",
+          "items": {
+            "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/param.json"
+          },
+          "description": "A list of parameters describing the file stored in the mzPeak archive itself"
+        }
+      }
+    },
+    "column_mapping": {
+      "type": "object",
+      "description": "A mapping from a Parquet column to a controlled vocabulary term",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The human-readable term name",
+          "examples": [
+            "ms level",
+            "filter string",
+            "selected ion m/z"
+          ]
+        },
+        "path": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "The path in a Parquet schema for the mapped column split at nesting levels, omitting [list, item|element] tokens",
+          "examples": [
+            ["isolation_window", "target_mz"],
+            ["activation", "collision_energy"]
+          ]
+        },
+        "accession": {
+          "type": ["string", "null"],
+          "description": "The CURIE for the controlled vocabulary term, or null if no controlled vocabulary term is available. Null may be used to indicate that a column has a human readable name but does not map to a controlled vocabulary term",
+          "default": null
+        },
+        "unit": {
+          "type": ["string", "null"],
+          "default": null
         }
       }
     }

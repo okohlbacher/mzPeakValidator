@@ -2,6 +2,9 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak metadata software list",
   "description": "Describe the JSON format of software list",
+  "$meta": {
+    "summary": "file:schema/meta/software.md"
+  },
   "type": "array",
   "items": {
     "$ref": "#/definitions/software"

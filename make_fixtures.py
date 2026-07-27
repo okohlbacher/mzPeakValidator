@@ -103,7 +103,7 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
         open(p, "wb").write(payload)
     files = [{"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
              {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"}]
-    metadata = {"version": "0.9",
+    metadata = {"version": "0.9.0",
                 "cv_list": _CV_LIST if cv_list is None else cv_list,
                 "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
     if imaging is not None: metadata["imaging"] = imaging

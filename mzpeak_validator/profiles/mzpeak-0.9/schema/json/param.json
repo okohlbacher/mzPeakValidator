@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak metadata JSON parameter",
-  "description": "Describe the JSON format of the metadata",
+  "description": "Describe the JSON format of controlled vocabulary or user-defined parameters.",
   "required": ["name"],
   "type": "object",
   "properties": {

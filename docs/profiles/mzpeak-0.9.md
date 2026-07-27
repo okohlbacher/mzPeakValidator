@@ -4,9 +4,9 @@
 > `python docs/gen_profile_page.py mzpeak_validator/profiles/mzpeak-0.9 > docs/profiles/mzpeak-0.9.md`
 
 - **Profile id:** `mzpeak-0.9`
-- **mzPeak spec:** 0.9 (commit [`29e59b24f0ae`](https://github.com/HUPO-PSI/mzPeak-specification))
+- **mzPeak spec:** 0.9 (commit [`e7f34474f31a`](https://github.com/HUPO-PSI/mzPeak-specification))
 - **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
-- **Rules:** 55 across 9 files
+- **Rules:** 63 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -42,10 +42,10 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 
 | Role | Id | Version | Path |
 |---|---|---|---|
-| cv | MS | 4.1.254 | `cv/psi-ms.obo.gz` |
+| cv | MS | 4.1.257 | `cv/psi-ms.obo.gz` |
 | cv | IMS | 1.1.0 | `cv/imagingMS.obo` |
 | cv | UO | 2026-01-16 | `cv/uo.obo` |
-| json-schema | mzpeak_index_legacy |  | `schema/mzpeak_index.schema.json` |
+| cv | MZP | 0.1.0 | `cv/mzpeak.obo` |
 | json-schema | mzpeak_index |  | `schema/json/mzpeak_index.json` |
 | json-schema | cv_list |  | `schema/json/cv_list.json` |
 | json-schema | file_description |  | `schema/json/file_description.json` |
@@ -62,6 +62,8 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | columns | spectra_data |  | `schema/tables/spectra_data.columns.json` |
 | columns | spectra_peaks |  | `schema/tables/spectra_peaks.columns.json` |
 | columns | chromatograms_metadata |  | `schema/tables/chromatograms_metadata.columns.json` |
+| columns | wavelength_spectra_metadata |  | `schema/tables/wavelength_spectra_metadata.columns.json` |
+| columns | wavelength_spectra_data |  | `schema/tables/wavelength_spectra_data.columns.json` |
 | rules |  |  | `rules/structural.rules.json` |
 | rules |  |  | `rules/cv.rules.json` |
 | rules |  |  | `rules/numeric.rules.json` |
@@ -111,6 +113,9 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `columns_spectra_data` | `columns_present` | error | none | spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion keeps the source width, and both are valid pending HUPO-PSI #11 (binary array data types). To require a single width, narrow the type list in spectra_data.columns.json. |
 | `columns_spectra_peaks` | `columns_present` | error | none | spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types. |
 | `columns_chromatograms_metadata` | `columns_present` | error | none | chromatograms_metadata carries the required structural facets/columns (chromatogram.index/id keys; FK keys on precursor/selected_ion/product when present), per schema/tables/chromatograms_metadata.columns.json. CV-inflected columns are validated separately by cv_inflection. No-ops on archives without a chromatograms_metadata table. |
+| `data_kind_has_facet_wavelength` | `data_kind_facet` | error | none | A file the index advertises as wavelength spectrum 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without wavelength spectra. |
+| `columns_wavelength_spectra_metadata` | `columns_present` | error | none | wavelength_spectra_metadata matches schema/tables/wavelength_spectra_metadata.columns.json: required spectrum.index primary key and scan.source_index FK; no precursor/selected_ion facets. No-ops when absent. |
+| `columns_wavelength_spectra_data` | `columns_present` | error | none | wavelength_spectra_data point layout matches schema/tables/wavelength_spectra_data.columns.json: entity index MUST be named wavelength_spectrum_index (not spectrum_index). No-ops when absent. |
 
 ### `cv.rules.json`
 
@@ -148,10 +153,13 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `point_fk_peaks` | `foreign_key` | error | none | Same FK integrity from spectra_peaks back to spectrum.index. |
 | `scan_source_index_fk` | `foreign_key` | error | rebuild | scan.source_index resolves to a spectrum.index (both in spectra_metadata). allow_null=true: in the packed parallel-facet layout the scan facet is null on rows owned by another facet (e.g. precursor-only PASEF rows), so child nulls are expected and not flagged. recovery=rebuild: the scan<->spectrum map is derivable. |
 | `spectrum_index_contiguous` | `index_contiguous` | warning | none | spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices. |
+| `chromatogram_index_contiguous` | `index_contiguous` | warning | none | chromatogram.index is 0-based contiguous (0..k-1) over its non-null entries. The chromatogram analog of spectrum_index_contiguous; no-ops on archives without chromatograms_metadata. |
+| `wavelength_spectrum_index_contiguous` | `index_contiguous` | warning | none | wavelength_spectra_metadata spectrum.index is 0-based contiguous over non-null entries. No-ops when absent. |
 | `precursor_source_fk` | `foreign_key` | error | rebuild | precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from. |
 | `selected_ion_source_fk` | `foreign_key` | error | rebuild | selected_ion.source_index resolves to a spectrum.index. allow_null (packed layout). |
 | `per_spectrum_data_points` | `grouped_count_equals` | error | rederive | Per-spectrum integrity: each spectrum's profile-point rows in spectra_data equal its declared number_of_data_points (null counted as 0). Stronger than data_points_sum -- catches localized/swapped count corruption a global sum hides. Gated to the point layout via 'guard'. |
 | `per_spectrum_peaks` | `grouped_count_equals` | error | rederive | Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points. |
+| `wavelength_point_fk_data` | `foreign_key` | error | none | wavelength_spectra_data point.wavelength_spectrum_index must resolve to wavelength_spectra_metadata spectrum.index. The wavelength-spectra analog of point_fk_data. No-ops when either table is absent. |
 
 ### `imaging.rules.json`
 
@@ -177,7 +185,8 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
 | `members_stored` | `zip_stored` | error | none | mzPeak ZIP members MUST be stored uncompressed (the format relies on stored members for direct/remote range access; the engine also refuses high-inflation archives as a zip-bomb guard). Directory archives are skipped. |
-| `facet_key_column_first` | `column_order` | warning | none | The entity-index / foreign-key column should be the first column of its facet (spectrum.index, scan/precursor/selected_ion.source_index). Advisory: a conformant reader resolves columns by name/array-index, not position, so this never FAILs an archive. |
+| `facet_key_column_first` | `column_order` | error | none | The entity-index / foreign-key column MUST be the first column of its facet (spec MUST; promotes from advisory to error — 0 corpus violations confirmed). |
+| `wavelength_facet_key_column_first` | `column_order` | error | none | wavelength_spectra_metadata: spectrum.index and scan.source_index MUST be the first columns of their facets (spec docs/schemas/wavelength-spectra.md). No-ops when the table is absent. |
 
 ### `layout.rules.json`
 
@@ -211,8 +220,9 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `meta_data_processing_valid` | `json_schema` | error | none | spectra_metadata footer 'data_processing_method_list' conforms to schema/json/data_processing.json. |
 | `meta_run_valid` | `json_schema` | error | none | spectra_metadata footer 'run' conforms to schema/json/ms_run.json. |
 | `meta_scan_settings_valid` | `json_schema` | error | none | spectra_metadata footer 'scan_settings_list' (imaging/run geometry) conforms to schema/json/scan_settings_list.json when present. |
-| `array_index_data_valid` | `json_schema` | error | none | spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json (entries, path, buffer_format, data/array types, sorting_rank, ...). |
-| `array_index_peaks_valid` | `json_schema` | error | none | spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json. |
+| `array_index_data_valid` | `json_schema` | error | none | spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json; data_type must be MS:1000518 child, array_type must be MS:1000513 child; all entries must share one buffer_format (point layout is all-or-nothing). |
+| `array_index_peaks_valid` | `json_schema` | error | none | spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json; same ancestry and uniformity checks as array_index_data_valid. |
+| `array_index_chromatograms_valid` | `json_schema` | error | none | chromatograms_data footer 'chromatogram_array_index' conforms to schema/json/array_index.json; same ancestry and uniformity checks. No-ops on archives without chromatograms_data. |
 
 ### `perf.rules.json`
 
@@ -321,4 +331,24 @@ _centroided layout. mz/intensity accept both 32- and 64-bit floats (see spectra_
 | `point` | no | `spectrum_index` | `uint` | no |
 | `point` | no | `mz` | `['double', 'float']` | no |
 | `point` | no | `intensity` | `['float', 'double']` | no |
+
+### `wavelength_spectra_data`
+
+_Point or chunk layout for wavelength spectrum signal data. Key difference from spectra_data: the entity index column MUST be named 'wavelength_spectrum_index' (spec MUST: docs/schemas/wavelength-spectra.md). Signal columns (wavelength axis, intensity) follow the same point/chunk layout conventions as spectra_data but their names are CV-governed via the array_index footer. All point columns marked required:false so chunk-layout archives are not false-failed; data_kind_has_facet_wavelength separately checks that either point or chunk is present._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+| `point` | no | `wavelength_spectrum_index` | `['uint']` | no |
+
+### `wavelength_spectra_metadata`
+
+_Packed parallel-facet layout for wavelength (UV/DAD/EMR) spectrum metadata. Mirrors spectra_metadata but WITHOUT precursor/selected_ion facets (EMR spectra have no isolation or fragmentation). Required: spectrum.index primary key (uint) and scan.source_index FK (uint). Per spec docs/schemas/wavelength-spectra.md: 'spectrum.index and scan.source_index MUST be the first column of their respective facets.'_
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+| `spectrum` | yes | `index` | `uint` | yes |
+| `spectrum` | yes | `id` | `string` | no |
+| `spectrum` | yes | `MS_1003060_number_of_data_points` | `uint` | no |
+| `spectrum` | yes | `number_of_auxiliary_arrays` | `uint` | no |
+| `scan` | no | `source_index` | `uint` | yes |
 

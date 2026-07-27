@@ -59,7 +59,7 @@
       "cv_terms": [
         { "cv_identifier_ref": "MS", "term_accession": "MS:1000586", "term_name": "contact name",
           "use_term": true, "use_term_name": false, "allow_children": false, "is_repeatable": false },
-        { "cv_identifier_ref": "MS", "term_accession": "MS:1000590", "term_name": "contact organization",
+        { "cv_identifier_ref": "MS", "term_accession": "MS:1000590", "term_name": "contact affiliation",
           "use_term": true, "use_term_name": false, "allow_children": false, "is_repeatable": false }
       ]
     },

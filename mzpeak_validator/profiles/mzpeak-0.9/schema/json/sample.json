@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak metadata sample list",
-  "description": "Describe the JSON format of sample list",
+  "description": "Describe the JSON format of the sample list. Multiple samples can be present in a single run in scenarios like multiplexing or pooling.",
   "type": "array",
   "items": {
     "$ref": "#/definitions/sample"
@@ -10,7 +10,7 @@
     "sample": {
       "type": "object",
       "description": "A description (one) of the samples used to generate this dataset. Analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#sample.",
-      "required": ["id", "name", "parameters"],
+      "required": ["id", "parameters"],
       "properties": {
         "id": {
           "type": "string",

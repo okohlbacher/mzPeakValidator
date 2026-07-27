@@ -32,6 +32,19 @@ except Exception as e:                                          # pragma: no cov
 # Build an offline JSON-Schema validator with a $ref store and a CURIE format checker.
 # jsonschema 4.18+ replaced RefResolver with the `referencing` library;
 # support both so the code runs on jsonschema 3–4+.
+
+def _fix_ecma_patterns(obj):
+    """Recursively convert ECMAScript named groups (?<name>...) → Python (?P<name>...) in
+    "pattern" fields so jsonschema can compile them on Python <3.13."""
+    if isinstance(obj, dict):
+        return {k: (re.sub(r'\(\?<([^>]+)>', r'(?P<\1>', v)
+                    if k == 'pattern' and isinstance(v, str)
+                    else _fix_ecma_patterns(v))
+                for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_fix_ecma_patterns(i) for i in obj]
+    return obj
+
 _CURIE_FC = None
 def _get_fc():
     global _CURIE_FC
@@ -53,6 +66,8 @@ def _get_fc():
 try:
     import referencing as _ref, referencing.jsonschema as _rjsc
     def _schema_validator(schema, store):
+        schema = _fix_ecma_patterns(schema)
+        store  = {u: _fix_ecma_patterns(s) for u, s in store.items()}
         resources = [(u, _rjsc.DRAFT7.create_resource(s)) for u, s in store.items()]
         return __import__("jsonschema").Draft7Validator(
             schema, registry=_ref.Registry().with_resources(resources),
@@ -60,6 +75,8 @@ try:
 except ImportError:                                             # jsonschema < 4.18
     def _schema_validator(schema, store):
         import jsonschema
+        schema = _fix_ecma_patterns(schema)
+        store  = {u: _fix_ecma_patterns(s) for u, s in store.items()}
         return jsonschema.Draft7Validator(
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())

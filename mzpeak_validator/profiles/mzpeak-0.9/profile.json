@@ -2,7 +2,7 @@
   "profile_id": "mzpeak-0.9",
   "mzpeak_spec": {
     "version": "0.9",
-    "commit": "ee6f2b2",
+    "commit": "e7f34474f31a9c8f0e888e05c6b85e876b68e153",
     "url": "https://github.com/HUPO-PSI/mzPeak-specification",
     "note": "Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0."
   },
@@ -11,7 +11,7 @@
   "severity_model": "hard-errors-nondemotable",
   "conformance_axes": ["well-formed", "schema", "numeric", "index", "cv", "cv-placement", "integrity", "imaging", "performance"],
   "artifacts": [
-    {"role": "cv", "id": "MS",  "version": "4.1.254",    "path": "cv/psi-ms.obo.gz", "sha256": null},
+    {"role": "cv", "id": "MS",  "version": "4.1.257",    "path": "cv/psi-ms.obo.gz", "sha256": null},
     {"role": "cv", "id": "IMS", "version": "1.1.0",      "path": "cv/imagingMS.obo", "sha256": null},
     {"role": "cv", "id": "UO",  "version": "2026-01-16", "path": "cv/uo.obo",        "sha256": null},
     {"role": "cv", "id": "MZP", "version": "0.1.0",      "path": "cv/mzpeak.obo",    "sha256": null},

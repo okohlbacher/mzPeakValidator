@@ -3,6 +3,9 @@
   "title": "mzPeak metadata file description",
   "description": "Describe the JSON format of the file description section",
   "type": "object",
+  "$meta": {
+    "summary": "file:schema/meta/file_description.md"
+  },
   "required": ["contents", "source_files"],
   "properties": {
     "contents": {
@@ -57,6 +60,14 @@
       "description": "A person or entity that is responsible for some portion of the data or processing that resulted in this archive. Analogous to https://peptideatlas.org/tmp/mzML1.1.0.html#contact",
       "required": ["parameters"],
       "properties": {
+        "contact_name": {
+          "type": "string",
+          "description": "The name of the contact person. This is equivalent to `MS:1000586|contact name` (http://purl.obolibrary.org/obo/MS_1000586)"
+        },
+        "contact_affiliation": {
+          "type": "string",
+          "description": "The home institute of the contact person. This is equivalent to `MS:1000590|contact affiliation` (http://purl.obolibrary.org/obo/MS_1000590)"
+        },
         "parameters": {
           "type": "array",
           "items": {

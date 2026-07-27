@@ -2,6 +2,9 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak metadata instrument configurations",
   "description": "Describe the JSON format of instrument configurations used to acquire a mass spectrometry experiment",
+  "$meta": {
+    "summary": "file:schema/meta/instrument_configurations.md"
+  },
   "type": "array",
   "items": {
     "$ref": "#/definitions/instrument_configuration"
