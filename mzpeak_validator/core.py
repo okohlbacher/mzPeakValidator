@@ -895,10 +895,19 @@ def _imaging(ar):
 
 def _is_split_layout(ar):
     """Return True if the archive uses the split-facet metadata layout (mzPeak >= 0.7).
-    Detected by presence of any index file with data_kind in {"scans","precursors","selected_ions"}."""
+
+    Primary detection: any index files[] entry with data_kind in {scans, precursors, selected_ions}.
+    Fallback (schema-based): spectra_metadata exists, has a flat top-level 'index' column,
+    and has no packed struct columns (spectrum.index absent) — catches MS1-only split archives
+    that omit all facet files from the index (Q1b: false-negative gap)."""
     split_kinds = {"scans", "precursors", "selected_ions"}
-    return any(fi.get("data_kind") in split_kinds
-               for fi in (ar.index or {}).get("files", []))
+    if any(fi.get("data_kind") in split_kinds for fi in (ar.index or {}).get("files", [])):
+        return True
+    if ar.has_file("spectra_metadata"):
+        fields = ar.fields("spectra_metadata")
+        if "index" in fields and "spectrum.index" not in fields:
+            return True
+    return False
 
 def p_index_files_present(ar, rule, rep, params):
     if getattr(ar, "_index_utf8_error", False):
@@ -1080,7 +1089,11 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     # PASEF precursor), not the spectrum count. If count_column (a facet primary key) is given,
     # count its non-null entries; the spectrum count is one per populated spectrum facet row.
     col = params.get("count_column")
-    if col and has(ar, f, col) and not params.get("_quick"):
+    if col and has(ar, f, col):
+        # Under --quick we can't count non-nulls without reading data, and falling back to
+        # num_rows would false-FAIL packed PASEF archives (rows >> spectra). Skip instead.
+        if params.get("_quick"):
+            return
         # Stream to count non-nulls; avoids loading the full column into RAM.
         nonnull = sum(len(arr) - arr.null_count for (arr,) in ar.iter_batches(f, col))
         actual, what = nonnull, f"non-null {col}"
@@ -1388,12 +1401,14 @@ def p_data_kind_facet(ar, rule, rep, params):
 def p_imaging_coordinates(ar, rule, rep, params):
     if not _imaging(ar): return
     sev = rule.get("severity", "error")
-    # Split layout: coordinates are in spectra_metadata_scans (with opt_ prefix).
-    # Packed layout: coordinates are nested under spectra_metadata as inflected columns.
-    if _is_split_layout(ar):
-        f = "spectra_metadata_scans"
-    else:
-        f = "spectra_metadata"
+    # Find the file that actually carries the IMS coordinate columns — prefer the scans file in
+    # split layout but fall back to spectra_metadata (handles Q7 residual: coords in either file).
+    f = None
+    for candidate in ("spectra_metadata_scans", "spectra_metadata"):
+        if ar.has_file(candidate) and any("IMS_1000050" in k for k in ar.fields(candidate)):
+            f = candidate; break
+    if f is None:
+        f = "spectra_metadata_scans" if _is_split_layout(ar) else "spectra_metadata"
     if not ar.has_file(f):
         rep.add(rule, sev, f"imaging archive: expected coordinate file '{f}' not found", {"file": f}); return
     fields = ar.fields(f)

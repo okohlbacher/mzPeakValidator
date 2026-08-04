@@ -7,7 +7,7 @@
       "columns": {
         "spectrum_index": {"type": "uint", "required": false},
         "mz": {"type": ["double", "float"], "required": false},
-        "intensity": {"type": ["float", "double", "integer"], "required": false}
+        "intensity": {"type": ["float", "double", "int"], "required": false}
       }
     }
   }

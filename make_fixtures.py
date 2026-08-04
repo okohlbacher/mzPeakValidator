@@ -53,6 +53,42 @@ def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64(), mz_sor
              "unit": "MS:1000040", "sorting_rank": mz_sorting_rank}]}).encode()
     return pa.table({"point": point}).replace_schema_metadata(kv)
 
+def _split_meta_flat(n=3):
+    """Flat spectra_metadata for split layout (mzPeak >= 0.7): one row per spectrum with plain
+    semantic column names (not CV-inflected), matching actual mzPeakConverter output."""
+    return pa.table({
+        "index": pa.array(range(n), pa.uint64()),
+        "ms_level": pa.array([1] * n, pa.uint8()),
+        "spectrum_representation": pa.array(["centroid spectrum"] * n, pa.large_string()),
+        "number_of_data_points": pa.array([4] * n, pa.uint64()),
+        "spectrum_type": pa.array(["mass spectrum"] * n, pa.large_string()),
+    }).replace_schema_metadata({b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(n * 4).encode()})
+
+def _split_scans(n=3, dangling=False):
+    """Scans facet for split layout. dangling=True sets last source_index to a nonexistent value."""
+    refs = list(range(n)); refs[-1] = 99 if dangling else refs[-1]
+    return pa.table({
+        "source_index": pa.array(refs, pa.uint64()),
+        "MS_1000795_no_combination": pa.array([0] * n, pa.uint8()),
+    })
+
+def _write_split(d, meta_flat, scans, data, verdict, rule=None, warn=None):
+    """Write a minimal split-layout archive and its expected.json."""
+    if os.path.isdir(d): shutil.rmtree(d)
+    os.makedirs(d)
+    pq.write_table(meta_flat, f"{d}/spectra_metadata.parquet")
+    pq.write_table(scans, f"{d}/spectra_metadata_scans.parquet")
+    pq.write_table(data, f"{d}/spectra_data.parquet")
+    files = [
+        {"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
+        {"name": "spectra_metadata_scans.parquet", "entity_type": "spectrum", "data_kind": "scans"},
+        {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"},
+    ]
+    metadata = {"version": "0.9.0", "cv_list": _CV_LIST,
+                "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
+    json.dump({"files": files, "metadata": metadata}, open(f"{d}/mzpeak_index.json", "w"), indent=1)
+    json.dump({"verdict": verdict, "rule": rule, "warn_rule": warn}, open(f"{d}/expected.json", "w"))
+
 def _chunk_data(n=3, drop_end=False):
     """Chunked spectra_data facet (one whole-spectrum m/z chunk per spectrum, numpress-linear). The
     point-layout numeric/count rules self-skip (no `point` facet), so a chunk archive validates clean.
@@ -202,6 +238,18 @@ def build_all(out_root):
          "path": "point.mz", "data_type": "MS:1000521", "array_type": "MS:1000514",
          "unit": "MS:1000040", "sorting_rank": 0}]}
     case("fail", "decoy_array_index_entry", _meta(), _data(S, desc, IN, array_index=decoy), "FAIL", "mz_monotonic_data")
+
+    # split-layout fixtures: mzPeak >= 0.7 writes each metadata facet to a separate Parquet file.
+    # spectra_metadata is flat (one row per spectrum, PK column `index`); scans/precursors/
+    # selected_ions carry `source_index` FK back to spectra_metadata.index.
+    smf, ssc, sdt = _split_meta_flat(), _split_scans(), _data(S, MZ, IN)
+    _write_split(os.path.join(out_root, "pass", "split_layout"), smf, ssc, sdt, "PASS")
+    cases.append("pass/split_layout")
+    # dangling FK: scans.source_index=99 but spectra_metadata.index has only {0,1,2}
+    smf2, ssc2 = _split_meta_flat(), _split_scans(dangling=True)
+    _write_split(os.path.join(out_root, "fail", "split_dangling_fk"), smf2, ssc2, sdt,
+                 "FAIL", "scan_source_fk_split")
+    cases.append("fail/split_dangling_fk")
 
     # adversarial: an image member naming a path outside the archive must be treated as absent
     # (not read) — path containment (review C1). Warns image_member_present; never reads the host file.

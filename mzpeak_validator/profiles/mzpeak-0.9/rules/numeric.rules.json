@@ -47,8 +47,8 @@
      "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
 
     {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.intensity is a numeric type. Accepts float, double, or integer (spec signal-data.md e7f3447 explicitly permits 32-bit integers). m/z is still float-only. Edit allowed[] to narrow.",
-     "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double", "integer"]}},
+     "doc": "spectra_data point.intensity is a numeric type. Accepts float, double, or signed integer (spec signal-data.md e7f3447: '32-bit integers'). Unsigned integer is NOT permitted by the spec. m/z is still float-only. 'int' matches any signed integer width (int8/16/32/64); narrow to 'int32' is not yet enforced at the logical-type level.",
+     "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double", "int"]}},
 
     {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
      "doc": "spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json.",
@@ -100,6 +100,30 @@
 
     {"id": "wavelength_point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
      "doc": "wavelength_spectra_data point.wavelength_spectrum_index must resolve to wavelength_spectra_metadata spectrum.index. The wavelength-spectra analog of point_fk_data. No-ops when either table is absent.",
-     "params": {"file": "wavelength_spectra_data", "column": "point.wavelength_spectrum_index", "ref_file": "wavelength_spectra_metadata", "ref_column": "spectrum.index"}}
+     "params": {"file": "wavelength_spectra_data", "column": "point.wavelength_spectrum_index", "ref_file": "wavelength_spectra_metadata", "ref_column": "spectrum.index"}},
+
+    {"id": "scan_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "Split-layout analog of scan_source_index_fk: every spectra_metadata_scans row's source_index must resolve to spectra_metadata.index (flat PK). No-ops on packed archives because spectra_metadata_scans does not exist there.",
+     "params": {"file": "spectra_metadata_scans", "column": "source_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
+
+    {"id": "precursor_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "Split-layout analog of precursor_source_fk: every spectra_metadata_precursors source_index must resolve to spectra_metadata.index. No-ops on packed archives.",
+     "params": {"file": "spectra_metadata_precursors", "column": "source_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
+
+    {"id": "selected_ion_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "Split-layout analog of selected_ion_source_fk: every spectra_metadata_selected_ions source_index must resolve to spectra_metadata.index. No-ops on packed archives.",
+     "params": {"file": "spectra_metadata_selected_ions", "column": "source_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
+
+    {"id": "point_fk_data_split", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "Split-layout analog of point_fk_data: every spectra_data point.spectrum_index must resolve to the flat spectra_metadata.index PK. No-ops on packed archives (spectra_metadata.index is absent in the packed struct layout; point_fk_data covers that case via spectrum.index).",
+     "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
+
+    {"id": "point_fk_peaks_split", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "Split-layout analog of point_fk_peaks for the centroided table.",
+     "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
+
+    {"id": "spectrum_index_contiguous_split", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
+     "doc": "Split-layout analog of spectrum_index_contiguous: the flat spectra_metadata.index must be 0-based contiguous. No-ops on packed archives (spectrum.index covers that case).",
+     "params": {"file": "spectra_metadata", "column": "index"}}
   ]
 }

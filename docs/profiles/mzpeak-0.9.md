@@ -6,7 +6,7 @@
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`e7f34474f31a`](https://github.com/HUPO-PSI/mzPeak-specification))
 - **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
-- **Rules:** 69 across 9 files
+- **Rules:** 75 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -152,7 +152,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `intensity_nonneg_peaks` | `column_predicate` | error | normalize | Same non-negativity check on the centroided spectra_peaks table. |
 | `mz_monotonic_data` | `grouped_monotonic` | error | reorder_pair | Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing -- but only when the array index declares point.mz sorted (non-null sorting_rank). A file that declares m/z unsorted is conformant as-is and is skipped (info). Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless). |
 | `mz_monotonic_peaks` | `grouped_monotonic` | error | reorder_pair | Same per-spectrum m/z ordering check on spectra_peaks, likewise gated on the declared sorting_rank of point.mz. |
-| `intensity_dtype_data` | `dtype_role` | error | none | spectra_data point.intensity is a numeric type. Accepts float, double, or integer (spec signal-data.md e7f3447 explicitly permits 32-bit integers). m/z is still float-only. Edit allowed[] to narrow. |
+| `intensity_dtype_data` | `dtype_role` | error | none | spectra_data point.intensity is a numeric type. Accepts float, double, or signed integer (spec signal-data.md e7f3447: '32-bit integers'). Unsigned integer is NOT permitted by the spec. m/z is still float-only. 'int' matches any signed integer width (int8/16/32/64); narrow to 'int32' is not yet enforced at the logical-type level. |
 | `mz_dtype_data` | `dtype_role` | error | none | spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json. |
 | `point_fk_data` | `foreign_key` | error | none | Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable. |
 | `chrom_point_fk_data` | `foreign_key` | error | none | Every chromatograms_data chunk.chromatogram_index references an existing chromatograms_metadata chromatogram.index. The chromatogram analog of point_fk_data; no-ops on archives without chromatograms. |
@@ -166,6 +166,12 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `per_spectrum_data_points` | `grouped_count_equals` | error | rederive | Per-spectrum integrity: each spectrum's profile-point rows in spectra_data equal its declared number_of_data_points (null counted as 0). Stronger than data_points_sum -- catches localized/swapped count corruption a global sum hides. Gated to the point layout via 'guard'. |
 | `per_spectrum_peaks` | `grouped_count_equals` | error | rederive | Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points. |
 | `wavelength_point_fk_data` | `foreign_key` | error | none | wavelength_spectra_data point.wavelength_spectrum_index must resolve to wavelength_spectra_metadata spectrum.index. The wavelength-spectra analog of point_fk_data. No-ops when either table is absent. |
+| `scan_source_fk_split` | `foreign_key` | error | rebuild | Split-layout analog of scan_source_index_fk: every spectra_metadata_scans row's source_index must resolve to spectra_metadata.index (flat PK). No-ops on packed archives because spectra_metadata_scans does not exist there. |
+| `precursor_source_fk_split` | `foreign_key` | error | rebuild | Split-layout analog of precursor_source_fk: every spectra_metadata_precursors source_index must resolve to spectra_metadata.index. No-ops on packed archives. |
+| `selected_ion_source_fk_split` | `foreign_key` | error | rebuild | Split-layout analog of selected_ion_source_fk: every spectra_metadata_selected_ions source_index must resolve to spectra_metadata.index. No-ops on packed archives. |
+| `point_fk_data_split` | `foreign_key` | error | none | Split-layout analog of point_fk_data: every spectra_data point.spectrum_index must resolve to the flat spectra_metadata.index PK. No-ops on packed archives (spectra_metadata.index is absent in the packed struct layout; point_fk_data covers that case via spectrum.index). |
+| `point_fk_peaks_split` | `foreign_key` | error | none | Split-layout analog of point_fk_peaks for the centroided table. |
+| `spectrum_index_contiguous_split` | `index_contiguous` | warning | none | Split-layout analog of spectrum_index_contiguous: the flat spectra_metadata.index must be 0-based contiguous. No-ops on packed archives (spectrum.index covers that case). |
 
 ### `imaging.rules.json`
 
@@ -327,7 +333,7 @@ _point layout. chunk/numpress layouts carry a `chunk` facet instead; point colum
 |---|---|---|---|---|
 | `point` | no | `spectrum_index` | `uint` | no |
 | `point` | no | `mz` | `['double', 'float']` | no |
-| `point` | no | `intensity` | `['float', 'double', 'integer']` | no |
+| `point` | no | `intensity` | `['float', 'double', 'int']` | no |
 
 ### `spectra_metadata`
 
@@ -378,7 +384,7 @@ _centroided layout. mz/intensity accept both 32- and 64-bit floats or 32-bit int
 |---|---|---|---|---|
 | `point` | no | `spectrum_index` | `uint` | no |
 | `point` | no | `mz` | `['double', 'float']` | no |
-| `point` | no | `intensity` | `['float', 'double', 'integer']` | no |
+| `point` | no | `intensity` | `['float', 'double', 'int']` | no |
 
 ### `wavelength_spectra_data`
 
