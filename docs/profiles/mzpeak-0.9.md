@@ -6,7 +6,7 @@
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`e7f34474f31a`](https://github.com/HUPO-PSI/mzPeak-specification))
 - **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
-- **Rules:** 75 across 9 files
+- **Rules:** 82 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -172,6 +172,13 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `point_fk_data_split` | `foreign_key` | error | none | Split-layout analog of point_fk_data: every spectra_data point.spectrum_index must resolve to the flat spectra_metadata.index PK. No-ops on packed archives (spectra_metadata.index is absent in the packed struct layout; point_fk_data covers that case via spectrum.index). |
 | `point_fk_peaks_split` | `foreign_key` | error | none | Split-layout analog of point_fk_peaks for the centroided table. |
 | `spectrum_index_contiguous_split` | `index_contiguous` | warning | none | Split-layout analog of spectrum_index_contiguous: the flat spectra_metadata.index must be 0-based contiguous. No-ops on packed archives (spectrum.index covers that case). |
+| `data_points_sum_split` | `count_sum_equals_rows` | error | rederive | Split-layout analog of data_points_sum: sum of per-spectrum number_of_data_points (plain flat column name) equals the spectra_data row count. Gated on point.intensity (skips chunk-layout archives). No-ops on packed archives because 'number_of_data_points' (flat) is absent there. |
+| `per_spectrum_data_points_split` | `grouped_count_equals` | error | rederive | Split-layout analog of per_spectrum_data_points: per-spectrum count check using flat column names (number_of_data_points, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives. |
+| `per_spectrum_peaks_split` | `grouped_count_equals` | error | rederive | Split-layout analog of per_spectrum_peaks: per-spectrum peak count check using flat column names (number_of_peaks, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives. |
+| `chrom_point_fk_data_split` | `foreign_key` | error | none | Split-layout analog of chrom_point_fk_data: every chromatograms_data chunk.chromatogram_index must resolve to the flat chromatograms_metadata.index PK. No-ops on packed archives (packed column is chromatogram.index). |
+| `chromatogram_index_contiguous_split` | `index_contiguous` | warning | none | Split-layout analog of chromatogram_index_contiguous: the flat chromatograms_metadata.index must be 0-based contiguous. No-ops on packed archives. |
+| `chrom_precursor_source_fk_split` | `foreign_key` | error | rebuild | Split-layout: every chromatograms_metadata_precursors.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives (flat 'index' column absent) and on archives without chromatogram precursors. |
+| `chrom_selected_ion_source_fk_split` | `foreign_key` | error | rebuild | Split-layout: every chromatograms_metadata_selected_ions.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives and on archives without chromatogram selected_ions. |
 
 ### `imaging.rules.json`
 

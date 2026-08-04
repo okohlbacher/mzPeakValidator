@@ -53,16 +53,18 @@ def _data(sidx, mz, inten, inten_type=pa.float32(), mz_type=pa.float64(), mz_sor
              "unit": "MS:1000040", "sorting_rank": mz_sorting_rank}]}).encode()
     return pa.table({"point": point}).replace_schema_metadata(kv)
 
-def _split_meta_flat(n=3):
+def _split_meta_flat(n=3, dp=None):
     """Flat spectra_metadata for split layout (mzPeak >= 0.7): one row per spectrum with plain
     semantic column names (not CV-inflected), matching actual mzPeakConverter output."""
+    if dp is None: dp = [4] * n
+    dp = list(dp)
     return pa.table({
         "index": pa.array(range(n), pa.uint64()),
         "ms_level": pa.array([1] * n, pa.uint8()),
         "spectrum_representation": pa.array(["centroid spectrum"] * n, pa.large_string()),
-        "number_of_data_points": pa.array([4] * n, pa.uint64()),
+        "number_of_data_points": pa.array(dp, pa.uint64()),
         "spectrum_type": pa.array(["mass spectrum"] * n, pa.large_string()),
-    }).replace_schema_metadata({b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(n * 4).encode()})
+    }).replace_schema_metadata({b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(sum(dp)).encode()})
 
 def _split_scans(n=3, dangling=False):
     """Scans facet for split layout. dangling=True sets last source_index to a nonexistent value."""
@@ -72,8 +74,36 @@ def _split_scans(n=3, dangling=False):
         "MS_1000795_no_combination": pa.array([0] * n, pa.uint8()),
     })
 
-def _write_split(d, meta_flat, scans, data, verdict, rule=None, warn=None):
-    """Write a minimal split-layout archive and its expected.json."""
+def _chrom_meta_flat(n=3, dp=None):
+    """Flat chromatograms_metadata for split layout (plain column names, no 'chromatogram' struct)."""
+    if dp is None: dp = [4] * n
+    return pa.table({
+        "index": pa.array(range(n), pa.uint64()),
+        "number_of_data_points": pa.array(list(dp), pa.uint64()),
+    })
+
+def _chrom_data(n=3, dangling=False):
+    """Chunk-layout chromatograms_data. dangling=True appends a row with chromatogram_index=99."""
+    cidx = [i for i in range(n) for _ in range(4)]  # 4 points per chromatogram
+    if dangling: cidx.append(99)
+    rows = len(cidx)
+    chunk = pa.StructArray.from_arrays([
+        pa.array(cidx, pa.uint64()),
+        pa.array(list(range(rows)), pa.float64()),
+        pa.array([10.0] * rows, pa.float32()),
+    ], names=["chromatogram_index", "rt", "intensity"])
+    return pa.table({"chunk": chunk})
+
+def _chrom_precursors(n=3, dangling=False):
+    """Chromatogram precursors facet (split layout). dangling=True sets last source_index to 99."""
+    refs = list(range(n))
+    if dangling: refs[-1] = 99
+    return pa.table({"source_index": pa.array(refs, pa.uint64())})
+
+def _write_split(d, meta_flat, scans, data, verdict, rule=None, warn=None,
+                 chrom_meta=None, chrom_data=None, chrom_precursors=None, chrom_selected_ions=None):
+    """Write a minimal split-layout archive and its expected.json.
+    Pass chrom_* tables to include chromatogram facets in the archive."""
     if os.path.isdir(d): shutil.rmtree(d)
     os.makedirs(d)
     pq.write_table(meta_flat, f"{d}/spectra_metadata.parquet")
@@ -84,6 +114,15 @@ def _write_split(d, meta_flat, scans, data, verdict, rule=None, warn=None):
         {"name": "spectra_metadata_scans.parquet", "entity_type": "spectrum", "data_kind": "scans"},
         {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"},
     ]
+    for tbl, fname, etype, dkind in [
+        (chrom_meta,         "chromatograms_metadata.parquet",            "chromatogram", "metadata"),
+        (chrom_data,         "chromatograms_data.parquet",                "chromatogram", "data arrays"),
+        (chrom_precursors,   "chromatograms_metadata_precursors.parquet", "chromatogram", "precursors"),
+        (chrom_selected_ions,"chromatograms_metadata_selected_ions.parquet","chromatogram","selected_ions"),
+    ]:
+        if tbl is not None:
+            pq.write_table(tbl, f"{d}/{fname}")
+            files.append({"name": fname, "entity_type": etype, "data_kind": dkind})
     metadata = {"version": "0.9.0", "cv_list": _CV_LIST,
                 "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
     json.dump({"files": files, "metadata": metadata}, open(f"{d}/mzpeak_index.json", "w"), indent=1)
@@ -250,6 +289,25 @@ def build_all(out_root):
     _write_split(os.path.join(out_root, "fail", "split_dangling_fk"), smf2, ssc2, sdt,
                  "FAIL", "scan_source_fk_split")
     cases.append("fail/split_dangling_fk")
+    # count integrity: sum(number_of_data_points)=12 but spectra_data has only 11 rows
+    sdt_short = _data([0]*4 + [1]*4 + [2]*3, MZ[:11], IN[:11])
+    _write_split(os.path.join(out_root, "fail", "split_count_sum"), _split_meta_flat(), _split_scans(), sdt_short,
+                 "FAIL", "data_points_sum_split")
+    cases.append("fail/split_count_sum")
+    # per-spectrum count: sum(2,6,4)=12==rows but spectrum 0 declares 2, has 4 -> per_spectrum_data_points_split
+    smf_ps = _split_meta_flat(n=3, dp=(2, 6, 4))
+    _write_split(os.path.join(out_root, "fail", "split_per_spectrum"), smf_ps, _split_scans(), _data(S, MZ, IN),
+                 "FAIL", "per_spectrum_data_points_split")
+    cases.append("fail/split_per_spectrum")
+    # chromatogram chunk FK: chunk.chromatogram_index=99 but chromatograms_metadata.index has only {0,1,2}
+    _write_split(os.path.join(out_root, "fail", "split_chrom_data_fk"), _split_meta_flat(), _split_scans(), _data(S, MZ, IN),
+                 "FAIL", "chrom_point_fk_data_split", chrom_meta=_chrom_meta_flat(), chrom_data=_chrom_data(dangling=True))
+    cases.append("fail/split_chrom_data_fk")
+    # chromatogram precursor FK: precursors.source_index=99 not in chromatograms_metadata.index
+    _write_split(os.path.join(out_root, "fail", "split_chrom_precursor_fk"), _split_meta_flat(), _split_scans(), _data(S, MZ, IN),
+                 "FAIL", "chrom_precursor_source_fk_split",
+                 chrom_meta=_chrom_meta_flat(), chrom_data=_chrom_data(), chrom_precursors=_chrom_precursors(dangling=True))
+    cases.append("fail/split_chrom_precursor_fk")
 
     # adversarial: an image member naming a path outside the archive must be treated as absent
     # (not read) — path containment (review C1). Warns image_member_present; never reads the host file.

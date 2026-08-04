@@ -124,6 +124,34 @@
 
     {"id": "spectrum_index_contiguous_split", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
      "doc": "Split-layout analog of spectrum_index_contiguous: the flat spectra_metadata.index must be 0-based contiguous. No-ops on packed archives (spectrum.index covers that case).",
-     "params": {"file": "spectra_metadata", "column": "index"}}
+     "params": {"file": "spectra_metadata", "column": "index"}},
+
+    {"id": "data_points_sum_split", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive",
+     "doc": "Split-layout analog of data_points_sum: sum of per-spectrum number_of_data_points (plain flat column name) equals the spectra_data row count. Gated on point.intensity (skips chunk-layout archives). No-ops on packed archives because 'number_of_data_points' (flat) is absent there.",
+     "params": {"file": "spectra_data", "count_file": "spectra_metadata", "count_column": "number_of_data_points", "guard": "point.intensity"}},
+
+    {"id": "per_spectrum_data_points_split", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
+     "doc": "Split-layout analog of per_spectrum_data_points: per-spectrum count check using flat column names (number_of_data_points, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives.",
+     "params": {"file": "spectra_data", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "number_of_data_points", "key_column": "index"}},
+
+    {"id": "per_spectrum_peaks_split", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
+     "doc": "Split-layout analog of per_spectrum_peaks: per-spectrum peak count check using flat column names (number_of_peaks, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives.",
+     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "number_of_peaks", "key_column": "index"}},
+
+    {"id": "chrom_point_fk_data_split", "primitive": "foreign_key", "severity": "error", "recovery": "none",
+     "doc": "Split-layout analog of chrom_point_fk_data: every chromatograms_data chunk.chromatogram_index must resolve to the flat chromatograms_metadata.index PK. No-ops on packed archives (packed column is chromatogram.index).",
+     "params": {"file": "chromatograms_data", "column": "chunk.chromatogram_index", "ref_file": "chromatograms_metadata", "ref_column": "index", "allow_null": true}},
+
+    {"id": "chromatogram_index_contiguous_split", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
+     "doc": "Split-layout analog of chromatogram_index_contiguous: the flat chromatograms_metadata.index must be 0-based contiguous. No-ops on packed archives.",
+     "params": {"file": "chromatograms_metadata", "column": "index"}},
+
+    {"id": "chrom_precursor_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "Split-layout: every chromatograms_metadata_precursors.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives (flat 'index' column absent) and on archives without chromatogram precursors.",
+     "params": {"file": "chromatograms_metadata_precursors", "column": "source_index", "ref_file": "chromatograms_metadata", "ref_column": "index"}},
+
+    {"id": "chrom_selected_ion_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
+     "doc": "Split-layout: every chromatograms_metadata_selected_ions.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives and on archives without chromatogram selected_ions.",
+     "params": {"file": "chromatograms_metadata_selected_ions", "column": "source_index", "ref_file": "chromatograms_metadata", "ref_column": "index"}}
   ]
 }
