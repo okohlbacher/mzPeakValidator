@@ -1,0 +1,7 @@
+{
+  "file": "chromatograms_metadata_selected_ions",
+  "note": "split-facet layout chromatogram selected-ion facet (mzPeak >= 0.7, spec e7f3447). Commonly 0 rows — an empty-but-present facet is explicitly legal.",
+  "top_level_columns": {
+    "source_index": {"type": "uint", "required": true}
+  }
+}

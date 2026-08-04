@@ -47,8 +47,8 @@
      "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
 
     {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.intensity is a floating type (float or double), never integer. Width-agnostic, matching the relaxed column schema (both 32- and 64-bit accepted). Edit allowed[] to broaden/narrow accepted types.",
-     "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double"]}},
+     "doc": "spectra_data point.intensity is a numeric type. Accepts float, double, or integer (spec signal-data.md e7f3447 explicitly permits 32-bit integers). m/z is still float-only. Edit allowed[] to narrow.",
+     "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double", "integer"]}},
 
     {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
      "doc": "spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json.",

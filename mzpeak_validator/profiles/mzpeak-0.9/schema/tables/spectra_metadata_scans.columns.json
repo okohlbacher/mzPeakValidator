@@ -1,0 +1,7 @@
+{
+  "file": "spectra_metadata_scans",
+  "note": "split-facet layout scan facet (mzPeak >= 0.7, spec e7f3447). Spec mandates non-null source_index FK referencing spectra_metadata.index. Zero-or-more rows per source_index are legal.",
+  "top_level_columns": {
+    "source_index": {"type": "uint", "required": true}
+  }
+}

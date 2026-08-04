@@ -134,7 +134,7 @@ def build_all(out_root):
     case("fail", "bad_point_count", _meta(dp=(4, 4, 99)), _data(S, MZ, IN), "FAIL", "data_points_sum")
     fk = S.copy(); fk[0] = 99
     case("fail", "dangling_fk", _meta(), _data(fk, MZ, IN), "FAIL", "point_fk_data")
-    case("fail", "int_intensity", _meta(), _data(S, MZ, [5, 4, 3, 2] * 3, inten_type=pa.int32()), "FAIL", "intensity_dtype_data")
+    case("pass", "int_intensity", _meta(), _data(S, MZ, [5, 4, 3, 2] * 3, inten_type=pa.int32()), "PASS")
     case("fail", "unknown_cv_code", _meta(bogus_cv=True), _data(S, MZ, IN), "FAIL", "cv_inflection_spectra_metadata")
     case("fail", "missing_indexed_file", _meta(), _data(S, MZ, IN), "FAIL", "index_files_present",
          extra_files=[{"name": "spectra_peaks.parquet", "entity_type": "spectrum", "data_kind": "peaks"}])

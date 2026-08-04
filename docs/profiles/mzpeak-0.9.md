@@ -6,7 +6,7 @@
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`e7f34474f31a`](https://github.com/HUPO-PSI/mzPeak-specification))
 - **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
-- **Rules:** 63 across 9 files
+- **Rules:** 69 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -107,14 +107,20 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
 | `index_files_present` | `index_files_present` | error | rebuild | Every file named in mzpeak_index.json 'files[]' exists and opens as Parquet, EXCEPT members declared as optical images in metadata.imaging.images[] (existence-checked only; bytes validated by the image primitives). recovery=rebuild: a lost/garbled index can be reconstructed from the present files. |
-| `data_kind_has_facet` | `data_kind_facet` | error | none | A file the index advertises as signal (data_kind 'data arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Catches an index that promises signal over a file holding something else. Amend: widen data_kinds/entity_types to gate more files, or add a facet name (e.g. a future layout) to facets[]. |
-| `data_kind_has_facet_chromatograms` | `data_kind_facet` | error | none | Same as data_kind_has_facet for the chromatogram entity: a file the index advertises as chromatogram 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without chromatograms. |
-| `columns_spectra_metadata` | `columns_present` | error | none | spectra_metadata has the required facets/columns and correct types per schema/tables/spectra_metadata.columns.json. To change WHICH columns are required or their expected type, edit that .columns.json file, not this rule. |
-| `columns_spectra_data` | `columns_present` | error | none | spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion keeps the source width, and both are valid pending HUPO-PSI #11 (binary array data types). To require a single width, narrow the type list in spectra_data.columns.json. |
-| `columns_spectra_peaks` | `columns_present` | error | none | spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types. |
-| `columns_chromatograms_metadata` | `columns_present` | error | none | chromatograms_metadata carries the required structural facets/columns (chromatogram.index/id keys; FK keys on precursor/selected_ion/product when present), per schema/tables/chromatograms_metadata.columns.json. CV-inflected columns are validated separately by cv_inflection. No-ops on archives without a chromatograms_metadata table. |
-| `data_kind_has_facet_wavelength` | `data_kind_facet` | error | none | A file the index advertises as wavelength spectrum 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without wavelength spectra. |
-| `columns_wavelength_spectra_metadata` | `columns_present` | error | none | wavelength_spectra_metadata matches schema/tables/wavelength_spectra_metadata.columns.json: required spectrum.index primary key and scan.source_index FK; no precursor/selected_ion facets. No-ops when absent. |
+| `data_kind_has_facet` | `data_kind_facet` | error | none | A file the index advertises as signal (data_kind 'data arrays'/'data_arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Accepts both spellings of data_arrays per spec e7f3447. |
+| `data_kind_has_facet_chromatograms` | `data_kind_facet` | error | none | Same as data_kind_has_facet for the chromatogram entity: a file the index advertises as chromatogram 'data arrays'/'data_arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without chromatograms. |
+| `columns_spectra_metadata` | `columns_present` | error | none | Packed-layout only: spectra_metadata has the required nested facets/columns per schema/tables/spectra_metadata.columns.json. Skipped on split-layout archives (where facets are separate files). |
+| `columns_spectra_metadata_split` | `columns_present` | error | none | Split-layout only: spectra_metadata has a non-null unique 'index' PK (spec metadata-tables.md MUST). Uses spectra_metadata_split column schema for the flat layout. |
+| `columns_spectra_metadata_scans` | `columns_present` | error | none | Split-layout only: spectra_metadata_scans has a non-null 'source_index' FK (spec metadata-tables.md MUST). No-ops if the file is absent or the archive is packed-layout. |
+| `columns_spectra_metadata_precursors` | `columns_present` | error | none | Split-layout only: spectra_metadata_precursors has a non-null 'source_index' FK. Zero-or-more rows per source_index is legal (timsTOF frames carry many precursors). No-ops if absent or packed-layout. |
+| `columns_spectra_metadata_selected_ions` | `columns_present` | error | none | Split-layout only: spectra_metadata_selected_ions has a non-null 'source_index' FK. No-ops if absent or packed-layout. |
+| `columns_spectra_data` | `columns_present` | error | none | spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats or 32-bit integers (spec signal-data.md e7f3447). |
+| `columns_spectra_peaks` | `columns_present` | error | none | spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. intensity accepts float, double, or integer (spec signal-data.md e7f3447). |
+| `columns_chromatograms_metadata` | `columns_present` | error | none | Packed-layout only: chromatograms_metadata carries the required nested struct facets/columns per schema/tables/chromatograms_metadata.columns.json. Skipped on split-layout archives. |
+| `columns_chromatograms_metadata_precursors` | `columns_present` | error | none | Split-layout only: chromatograms_metadata_precursors has a non-null 'source_index' FK. Commonly 0 rows (empty-but-present is legal). No-ops if absent or packed-layout. |
+| `columns_chromatograms_metadata_selected_ions` | `columns_present` | error | none | Split-layout only: chromatograms_metadata_selected_ions has a non-null 'source_index' FK. No-ops if absent or packed-layout. |
+| `data_kind_has_facet_wavelength` | `data_kind_facet` | error | none | A file the index advertises as wavelength spectrum 'data arrays'/'data_arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without wavelength spectra. |
+| `columns_wavelength_spectra_metadata` | `columns_present` | error | none | Packed-layout only: wavelength_spectra_metadata matches schema/tables/wavelength_spectra_metadata.columns.json. Skipped on split-layout archives. |
 | `columns_wavelength_spectra_data` | `columns_present` | error | none | wavelength_spectra_data point layout matches schema/tables/wavelength_spectra_data.columns.json: entity index MUST be named wavelength_spectrum_index (not spectrum_index). No-ops when absent. |
 
 ### `cv.rules.json`
@@ -146,7 +152,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `intensity_nonneg_peaks` | `column_predicate` | error | normalize | Same non-negativity check on the centroided spectra_peaks table. |
 | `mz_monotonic_data` | `grouped_monotonic` | error | reorder_pair | Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing -- but only when the array index declares point.mz sorted (non-null sorting_rank). A file that declares m/z unsorted is conformant as-is and is skipped (info). Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless). |
 | `mz_monotonic_peaks` | `grouped_monotonic` | error | reorder_pair | Same per-spectrum m/z ordering check on spectra_peaks, likewise gated on the declared sorting_rank of point.mz. |
-| `intensity_dtype_data` | `dtype_role` | error | none | spectra_data point.intensity is a floating type (float or double), never integer. Width-agnostic, matching the relaxed column schema (both 32- and 64-bit accepted). Edit allowed[] to broaden/narrow accepted types. |
+| `intensity_dtype_data` | `dtype_role` | error | none | spectra_data point.intensity is a numeric type. Accepts float, double, or integer (spec signal-data.md e7f3447 explicitly permits 32-bit integers). m/z is still float-only. Edit allowed[] to narrow. |
 | `mz_dtype_data` | `dtype_role` | error | none | spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json. |
 | `point_fk_data` | `foreign_key` | error | none | Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable. |
 | `chrom_point_fk_data` | `foreign_key` | error | none | Every chromatograms_data chunk.chromatogram_index references an existing chromatograms_metadata chromatogram.index. The chromatogram analog of point_fk_data; no-ops on archives without chromatograms. |
@@ -256,7 +262,7 @@ The 26 primitives used by this profile and the parameters each accepts:
 - **`chunk_columns`** — params: file, start_column (the chunk-start column whose presence flags the chunked sublayout), required ([companion columns that MUST then exist]). Schema-only; runs under --quick.
 - **`column_order`** — params: file, expected ({facet -> required first column}). The entity-index / FK key MUST be the first column of its facet. Cheap (reads the Parquet schema only).
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
-- **`columns_present`** — params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float']); type mismatch -> error, recovery rederive.
+- **`columns_present`** — params: file (logical table name), require_layout (optional: 'packed'|'split' — skips if the archive uses the other layout), schema_key (optional: use a different column schema than params.file). The engine injects the matching schema/tables/<schema_key_or_file>.columns.json; the rule checks required top_level_columns (flat split-layout tables) and/or facets/columns (nested packed-layout tables) and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float','integer']); type mismatch -> error, recovery rederive.
 - **`count_sum_equals_rows`** — params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.
 - **`cv_inflection`** — params: file (logical table name). The engine injects the set of pinned CV accessions. For each column whose leaf name matches ${CV}_${digits}_... (and any _unit_${CV}_${digits} suffix): unknown CV code -> error; known code but accession absent from the pinned OBO -> warning. The literal prefix 'ARROW_' is skipped (it is not a CV).
 - **`cv_list_consistency`** — params: [files], [list]. The engine injects the profile's pinned CV versions. Gathers every CV code used in inflected columns (primary + unit accessions) across `files`; requires metadata.cv_list (at `list`) to declare each used code (spec: every referenced CV MUST be declared once in cv_list). Absent/empty cv_list, or a used-but-undeclared code -> error. Version policy: warn ONLY when a declared CV version is NEWER than the profile's pinned snapshot (the validator is behind -> update its bundled CVs); a same-or-older declared version does NOT warn (a plain version difference is not a problem).
@@ -299,15 +305,29 @@ _Packed parallel-facet layout (same shape as spectra_metadata): top-level struct
 | `product` | no | `source_index` | `uint` | yes |
 | `product` | no | `product_index` | `uint` | no |
 
+### `chromatograms_metadata_precursors`
+
+_split-facet layout chromatogram precursor facet (mzPeak >= 0.7, spec e7f3447). Commonly 0 rows — an empty-but-present facet is explicitly legal per spec conformance.md._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+
+### `chromatograms_metadata_selected_ions`
+
+_split-facet layout chromatogram selected-ion facet (mzPeak >= 0.7, spec e7f3447). Commonly 0 rows — an empty-but-present facet is explicitly legal._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+
 ### `spectra_data`
 
-_point layout. chunk/numpress layouts carry a `chunk` facet instead; point columns are optional so those layouts are not false-failed (their decoding is a v1 TODO). mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion preserves the source width (32-bit m/z, 64-bit intensity) -- both are valid pending HUPO-PSI #11._
+_point layout. chunk/numpress layouts carry a `chunk` facet instead; point columns are optional so those layouts are not false-failed. mz/intensity accept both 32- and 64-bit floats or 32-bit integers (spec signal-data.md e7f3447: integers explicitly permitted; HUPO-PSI #11)._
 
 | Facet | Facet required | Column | Type | Column required |
 |---|---|---|---|---|
 | `point` | no | `spectrum_index` | `uint` | no |
 | `point` | no | `mz` | `['double', 'float']` | no |
-| `point` | no | `intensity` | `['float', 'double']` | no |
+| `point` | no | `intensity` | `['float', 'double', 'integer']` | no |
 
 ### `spectra_metadata`
 
@@ -322,15 +342,43 @@ _point layout. chunk/numpress layouts carry a `chunk` facet instead; point colum
 | `precursor` | no | `source_index` | `uint` | yes |
 | `selected_ion` | no | `source_index` | `uint` | yes |
 
+### `spectra_metadata_precursors`
+
+_split-facet layout precursor facet (mzPeak >= 0.7, spec e7f3447). Spec mandates non-null source_index FK. Zero-or-more rows per source_index; a timsTOF DDA-PASEF frame carries many precursors per spectrum._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+
+### `spectra_metadata_scans`
+
+_split-facet layout scan facet (mzPeak >= 0.7, spec e7f3447). Spec mandates non-null source_index FK referencing spectra_metadata.index. Zero-or-more rows per source_index are legal._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+
+### `spectra_metadata_selected_ions`
+
+_split-facet layout selected-ion facet (mzPeak >= 0.7, spec e7f3447). Spec mandates non-null source_index FK._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+
+### `spectra_metadata_split`
+
+_split-facet layout primary table (mzPeak >= 0.7, spec e7f3447). Flat top-level columns; no nested struct facets. Spec mandates a unique non-null 'index' PK._
+
+| Facet | Facet required | Column | Type | Column required |
+|---|---|---|---|---|
+
 ### `spectra_peaks`
 
-_centroided layout. mz/intensity accept both 32- and 64-bit floats (see spectra_data note; HUPO-PSI #11)._
+_centroided layout. mz/intensity accept both 32- and 64-bit floats or 32-bit integers (spec signal-data.md e7f3447: 'intensity arrays may be 32-bit float, 64-bit double, or even 32-bit integers')._
 
 | Facet | Facet required | Column | Type | Column required |
 |---|---|---|---|---|
 | `point` | no | `spectrum_index` | `uint` | no |
 | `point` | no | `mz` | `['double', 'float']` | no |
-| `point` | no | `intensity` | `['float', 'double']` | no |
+| `point` | no | `intensity` | `['float', 'double', 'integer']` | no |
 
 ### `wavelength_spectra_data`
 

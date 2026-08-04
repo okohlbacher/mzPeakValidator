@@ -8,7 +8,7 @@
     "primitives": {
       "index_files_present": "no params. Walks mzpeak_index.json 'files[]'; errors if a listed member is missing. Every member must open as Parquet EXCEPT those declared as embedded optical images in metadata.imaging.images[] (matched by archive_path) — those are opaque blobs checked by the image primitives, not Parquet-parsed. Gating on the declared-image registry (not on data_kind/extension) keeps a mislabelled/corrupt member from dodging the parse check. Also reports a malformed 'files' list / entry.",
       "data_kind_facet": "params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.",
-      "columns_present": "params: file (logical table name). The engine injects the matching schema/tables/<file>.columns.json; the rule checks required facets/columns are present and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float']); type mismatch -> error, recovery rederive."
+      "columns_present": "params: file (logical table name), require_layout (optional: 'packed'|'split' — skips if the archive uses the other layout), schema_key (optional: use a different column schema than params.file). The engine injects the matching schema/tables/<schema_key_or_file>.columns.json; the rule checks required top_level_columns (flat split-layout tables) and/or facets/columns (nested packed-layout tables) and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float','integer']); type mismatch -> error, recovery rederive."
     }
   },
   "rules": [
@@ -17,36 +17,60 @@
      "params": {}},
 
     {"id": "data_kind_has_facet", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",
-     "doc": "A file the index advertises as signal (data_kind 'data arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Catches an index that promises signal over a file holding something else. Amend: widen data_kinds/entity_types to gate more files, or add a facet name (e.g. a future layout) to facets[].",
-     "params": {"data_kinds": ["data arrays", "peaks"], "facets": ["point", "chunk"], "entity_types": ["spectrum", "mass spectrum"]}},
+     "doc": "A file the index advertises as signal (data_kind 'data arrays'/'data_arrays' or 'peaks' for a spectrum entity) must actually carry a 'point' or 'chunk' top-level column. Accepts both spellings of data_arrays per spec e7f3447.",
+     "params": {"data_kinds": ["data arrays", "data_arrays", "peaks"], "facets": ["point", "chunk"], "entity_types": ["spectrum", "mass spectrum"]}},
 
     {"id": "data_kind_has_facet_chromatograms", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",
-     "doc": "Same as data_kind_has_facet for the chromatogram entity: a file the index advertises as chromatogram 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without chromatograms.",
-     "params": {"data_kinds": ["data arrays"], "facets": ["point", "chunk"], "entity_types": ["chromatogram"]}},
+     "doc": "Same as data_kind_has_facet for the chromatogram entity: a file the index advertises as chromatogram 'data arrays'/'data_arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without chromatograms.",
+     "params": {"data_kinds": ["data arrays", "data_arrays"], "facets": ["point", "chunk"], "entity_types": ["chromatogram"]}},
 
     {"id": "columns_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
-     "doc": "spectra_metadata has the required facets/columns and correct types per schema/tables/spectra_metadata.columns.json. To change WHICH columns are required or their expected type, edit that .columns.json file, not this rule.",
-     "params": {"file": "spectra_metadata"}},
+     "doc": "Packed-layout only: spectra_metadata has the required nested facets/columns per schema/tables/spectra_metadata.columns.json. Skipped on split-layout archives (where facets are separate files).",
+     "params": {"file": "spectra_metadata", "require_layout": "packed"}},
+
+    {"id": "columns_spectra_metadata_split", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "Split-layout only: spectra_metadata has a non-null unique 'index' PK (spec metadata-tables.md MUST). Uses spectra_metadata_split column schema for the flat layout.",
+     "params": {"file": "spectra_metadata", "schema_key": "spectra_metadata_split", "require_layout": "split"}},
+
+    {"id": "columns_spectra_metadata_scans", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "Split-layout only: spectra_metadata_scans has a non-null 'source_index' FK (spec metadata-tables.md MUST). No-ops if the file is absent or the archive is packed-layout.",
+     "params": {"file": "spectra_metadata_scans", "require_layout": "split"}},
+
+    {"id": "columns_spectra_metadata_precursors", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "Split-layout only: spectra_metadata_precursors has a non-null 'source_index' FK. Zero-or-more rows per source_index is legal (timsTOF frames carry many precursors). No-ops if absent or packed-layout.",
+     "params": {"file": "spectra_metadata_precursors", "require_layout": "split"}},
+
+    {"id": "columns_spectra_metadata_selected_ions", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "Split-layout only: spectra_metadata_selected_ions has a non-null 'source_index' FK. No-ops if absent or packed-layout.",
+     "params": {"file": "spectra_metadata_selected_ions", "require_layout": "split"}},
 
     {"id": "columns_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none",
-     "doc": "spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats: the reference writer emits mz=double/intensity=float, but L1-faithful imzML conversion keeps the source width, and both are valid pending HUPO-PSI #11 (binary array data types). To require a single width, narrow the type list in spectra_data.columns.json.",
+     "doc": "spectra_data (profile/point layout) matches schema/tables/spectra_data.columns.json. point.mz/intensity accept both 32- and 64-bit floats or 32-bit integers (spec signal-data.md e7f3447).",
      "params": {"file": "spectra_data"}},
 
     {"id": "columns_spectra_peaks", "primitive": "columns_present", "severity": "error", "recovery": "none",
-     "doc": "spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. Edit that schema to change required columns/types.",
+     "doc": "spectra_peaks (centroided layout) matches schema/tables/spectra_peaks.columns.json. intensity accepts float, double, or integer (spec signal-data.md e7f3447).",
      "params": {"file": "spectra_peaks"}},
 
     {"id": "columns_chromatograms_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
-     "doc": "chromatograms_metadata carries the required structural facets/columns (chromatogram.index/id keys; FK keys on precursor/selected_ion/product when present), per schema/tables/chromatograms_metadata.columns.json. CV-inflected columns are validated separately by cv_inflection. No-ops on archives without a chromatograms_metadata table.",
-     "params": {"file": "chromatograms_metadata"}},
+     "doc": "Packed-layout only: chromatograms_metadata carries the required nested struct facets/columns per schema/tables/chromatograms_metadata.columns.json. Skipped on split-layout archives.",
+     "params": {"file": "chromatograms_metadata", "require_layout": "packed"}},
+
+    {"id": "columns_chromatograms_metadata_precursors", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "Split-layout only: chromatograms_metadata_precursors has a non-null 'source_index' FK. Commonly 0 rows (empty-but-present is legal). No-ops if absent or packed-layout.",
+     "params": {"file": "chromatograms_metadata_precursors", "require_layout": "split"}},
+
+    {"id": "columns_chromatograms_metadata_selected_ions", "primitive": "columns_present", "severity": "error", "recovery": "none",
+     "doc": "Split-layout only: chromatograms_metadata_selected_ions has a non-null 'source_index' FK. No-ops if absent or packed-layout.",
+     "params": {"file": "chromatograms_metadata_selected_ions", "require_layout": "split"}},
 
     {"id": "data_kind_has_facet_wavelength", "primitive": "data_kind_facet", "severity": "error", "recovery": "none",
-     "doc": "A file the index advertises as wavelength spectrum 'data arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without wavelength spectra.",
-     "params": {"data_kinds": ["data arrays"], "facets": ["point", "chunk"], "entity_types": ["wavelength spectrum"]}},
+     "doc": "A file the index advertises as wavelength spectrum 'data arrays'/'data_arrays' must carry a 'point' or 'chunk' top-level column. No-ops on archives without wavelength spectra.",
+     "params": {"data_kinds": ["data arrays", "data_arrays"], "facets": ["point", "chunk"], "entity_types": ["wavelength spectrum"]}},
 
     {"id": "columns_wavelength_spectra_metadata", "primitive": "columns_present", "severity": "error", "recovery": "none",
-     "doc": "wavelength_spectra_metadata matches schema/tables/wavelength_spectra_metadata.columns.json: required spectrum.index primary key and scan.source_index FK; no precursor/selected_ion facets. No-ops when absent.",
-     "params": {"file": "wavelength_spectra_metadata"}},
+     "doc": "Packed-layout only: wavelength_spectra_metadata matches schema/tables/wavelength_spectra_metadata.columns.json. Skipped on split-layout archives.",
+     "params": {"file": "wavelength_spectra_metadata", "require_layout": "packed"}},
 
     {"id": "columns_wavelength_spectra_data", "primitive": "columns_present", "severity": "error", "recovery": "none",
      "doc": "wavelength_spectra_data point layout matches schema/tables/wavelength_spectra_data.columns.json: entity index MUST be named wavelength_spectrum_index (not spectrum_index). No-ops when absent.",

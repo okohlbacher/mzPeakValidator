@@ -1,0 +1,7 @@
+{
+  "file": "spectra_metadata_precursors",
+  "note": "split-facet layout precursor facet (mzPeak >= 0.7, spec e7f3447). Spec mandates non-null source_index FK. Zero-or-more rows per source_index; a timsTOF DDA-PASEF frame carries many precursors per spectrum.",
+  "top_level_columns": {
+    "source_index": {"type": "uint", "required": true}
+  }
+}

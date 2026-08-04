@@ -1,0 +1,7 @@
+{
+  "file": "spectra_metadata_split",
+  "note": "split-facet layout primary table (mzPeak >= 0.7, spec e7f3447). Flat top-level columns; no nested struct facets. Spec mandates a unique non-null 'index' PK.",
+  "top_level_columns": {
+    "index": {"type": "uint", "required": true}
+  }
+}

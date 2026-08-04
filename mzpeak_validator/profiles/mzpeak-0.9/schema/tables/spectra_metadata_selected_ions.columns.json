@@ -1,0 +1,7 @@
+{
+  "file": "spectra_metadata_selected_ions",
+  "note": "split-facet layout selected-ion facet (mzPeak >= 0.7, spec e7f3447). Spec mandates non-null source_index FK.",
+  "top_level_columns": {
+    "source_index": {"type": "uint", "required": true}
+  }
+}

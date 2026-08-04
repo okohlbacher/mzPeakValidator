@@ -887,7 +887,18 @@ INFLECT = re.compile(r"^([A-Za-z]+)_(\d+)_")
 def _imaging(ar):
     if _dict(_dict((ar.index or {}).get("metadata")).get("imaging")).get("is_imaging"):
         return True
-    return ar.has_file("spectra_metadata") and any("IMS_1000050" in k for k in ar.fields("spectra_metadata"))
+    # Check both packed-layout (spectra_metadata) and split-layout (spectra_metadata_scans)
+    for f in ("spectra_metadata", "spectra_metadata_scans"):
+        if ar.has_file(f) and any("IMS_1000050" in k for k in ar.fields(f)):
+            return True
+    return False
+
+def _is_split_layout(ar):
+    """Return True if the archive uses the split-facet metadata layout (mzPeak >= 0.7).
+    Detected by presence of any index file with data_kind in {"scans","precursors","selected_ions"}."""
+    split_kinds = {"scans", "precursors", "selected_ions"}
+    return any(fi.get("data_kind") in split_kinds
+               for fi in (ar.index or {}).get("files", []))
 
 def p_index_files_present(ar, rule, rep, params):
     if getattr(ar, "_index_utf8_error", False):
@@ -941,7 +952,28 @@ def p_columns_present(ar, rule, rep, params):
     f, spec = params["file"], params.get("_columns")
     if not (ar.has_file(f) and spec):
         return
+    # Layout gating: "packed" skips on split-layout archives, "split" skips on packed archives
+    req_layout = params.get("require_layout")
+    if req_layout:
+        split = _is_split_layout(ar)
+        if req_layout == "packed" and split:
+            return
+        if req_layout == "split" and not split:
+            return
     fields = ar.fields(f)
+    # Top-level flat columns (split-layout tables have no nested struct facets)
+    for col, cs in spec.get("top_level_columns", {}).items():
+        got = fields.get(col)
+        if got is None:
+            if cs.get("required"):
+                rep.add(rule, "error", f"{f}: required column '{col}' absent", {"file": f, "column": col})
+            continue
+        want = cs.get("type")
+        if want and not type_matches(arrow_logical(got), want):
+            exp = " or ".join(want) if isinstance(want, list) else want
+            rep.add(rule, "error", f"{f}.{col}: type {arrow_logical(got)} != expected {exp}",
+                    {"file": f, "column": col}, recovery="rederive")
+    # Nested facet columns (packed-layout tables use top-level struct columns per facet)
     for facet, fs in spec.get("facets", {}).items():
         present = any(k == facet or k.startswith(facet + ".") for k in fields)
         if not present:
@@ -1090,7 +1122,7 @@ def p_dtype_role(ar, rule, rep, params):
     role = params.get("role", col.split(".")[-1])
     actual = ar.fields(f)[col]              # type already in schema metadata; no column decode needed
     ty = arrow_logical(actual)
-    if ty not in allowed:
+    if not type_matches(ty, allowed):
         rep.add(rule, "error",
                 f"{f}.{col}: stored as {actual} (logical '{ty}'), which is invalid for a '{role}' column "
                 f"(expected one of {allowed})", {"file": f, "column": col})
@@ -1356,7 +1388,15 @@ def p_data_kind_facet(ar, rule, rep, params):
 def p_imaging_coordinates(ar, rule, rep, params):
     if not _imaging(ar): return
     sev = rule.get("severity", "error")
-    f = "spectra_metadata"; fields = ar.fields(f)
+    # Split layout: coordinates are in spectra_metadata_scans (with opt_ prefix).
+    # Packed layout: coordinates are nested under spectra_metadata as inflected columns.
+    if _is_split_layout(ar):
+        f = "spectra_metadata_scans"
+    else:
+        f = "spectra_metadata"
+    if not ar.has_file(f):
+        rep.add(rule, sev, f"imaging archive: expected coordinate file '{f}' not found", {"file": f}); return
+    fields = ar.fields(f)
     has_x = any(k.endswith("IMS_1000050_position_x") for k in fields)
     has_y = any(k.endswith("IMS_1000051_position_y") for k in fields)
     if not (has_x and has_y):
@@ -1791,7 +1831,8 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
             if prim == "cv_inflection":
                 params["_cv"] = prof.cv
             elif prim == "columns_present":
-                params["_columns"] = prof.columns.get(params.get("file"))
+                schema_key = params.get("schema_key") or params.get("file")
+                params["_columns"] = prof.columns.get(schema_key)
             elif prim == "json_schema":
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
                 params["_schema_store"] = prof._json_schema_store

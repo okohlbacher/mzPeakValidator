@@ -1,0 +1,7 @@
+{
+  "file": "chromatograms_metadata_precursors",
+  "note": "split-facet layout chromatogram precursor facet (mzPeak >= 0.7, spec e7f3447). Commonly 0 rows — an empty-but-present facet is explicitly legal per spec conformance.md.",
+  "top_level_columns": {
+    "source_index": {"type": "uint", "required": true}
+  }
+}
