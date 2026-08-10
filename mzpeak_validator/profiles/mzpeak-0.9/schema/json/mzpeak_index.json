@@ -20,7 +20,7 @@
         "version": {
           "type": "string",
           "description": "The mzPeak file format version, formatted as a semantic version",
-          "pattern": "(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)"
+          "pattern": "^\\d+\\.\\d+\\.\\d+$"
         },
         "id": {
           "type": "string",
@@ -108,12 +108,12 @@
           ]
         },
         "path": {
-          "type": "array",
-          "items": {"type": "string"},
-          "description": "The path in a Parquet schema for the mapped column split at nesting levels, omitting [list, item|element] tokens",
+          "type": "string",
+          "description": "The path in a Parquet schema for the mapped column delimited at nesting levels by '.', omitting [list, item|element] tokens",
+          "pattern": "^(([A-Za-z0-9_]+)(?:\\.([A-Za-z0-9_]+))*)$",
           "examples": [
-            ["isolation_window", "target_mz"],
-            ["activation", "collision_energy"]
+            "ms_level",
+            "isolation_window.isolation_window_target"
           ]
         },
         "accession": {

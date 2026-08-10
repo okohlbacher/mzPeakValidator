@@ -4,7 +4,7 @@
 > `python docs/gen_profile_page.py mzpeak_validator/profiles/mzpeak-0.9 > docs/profiles/mzpeak-0.9.md`
 
 - **Profile id:** `mzpeak-0.9`
-- **mzPeak spec:** 0.9 (commit [`e7f34474f31a`](https://github.com/HUPO-PSI/mzPeak-specification))
+- **mzPeak spec:** 0.9 (commit [`85442bd68ecc`](https://github.com/HUPO-PSI/mzPeak-specification))
 - **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
 - **Rules:** 82 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
@@ -215,9 +215,9 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
-| `chunk_columns_spectra_data` | `chunk_columns` | error | none | A chunked spectra_data facet (declares chunk.mz_chunk_start) MUST carry its companion columns: mz_chunk_end, mz_chunk_values, chunk_encoding, intensity. Skips the scalar/point sublayout and absent files. |
+| `chunk_columns_spectra_data` | `chunk_columns` | error | none | A chunked spectra_data facet (declares chunk.mz_chunk_start) MUST carry its companion columns: mz_chunk_end, mz_chunk_values, chunk_encoding. intensity is omitted here because numpress archives store it as intensity_numpress_slof_bytes instead. Skips the scalar/point sublayout and absent files. |
 | `chunk_bounds_spectra_data` | `chunk_bounds` | warning | reorder_pair | Within each spectrum, m/z chunks have mz_chunk_start <= mz_chunk_end and are non-overlapping & ascending by start (the chunked analog of m/z monotonicity). The ascending/non-overlap part is a spec MUST; shipped at WARNING (advisory) in Phase 1 because real numpress-linear files carry an occasional converter-side mz_chunk_end=0 glitch — promote to error once that is calibrated/fixed. |
-| `chunk_columns_chromatograms_data` | `chunk_columns` | error | none | A chunked chromatograms_data facet (declares chunk.time_chunk_start) MUST carry time_chunk_end, time_chunk_values, chunk_encoding, intensity. |
+| `chunk_columns_chromatograms_data` | `chunk_columns` | error | none | A chunked chromatograms_data facet (declares chunk.time_chunk_start) MUST carry time_chunk_end, time_chunk_values, chunk_encoding. intensity omitted for numpress compat (see chunk_columns_spectra_data). |
 | `chunk_bounds_chromatograms_data` | `chunk_bounds` | warning | reorder_pair | Within each chromatogram, time chunks have time_chunk_start <= time_chunk_end and are non-overlapping & ascending by start. Advisory (warning) in Phase 1, mirroring chunk_bounds_spectra_data. |
 | `aux_arrays_spectra_metadata` | `aux_arrays` | error | rederive | Each spectrum's declared number_of_auxiliary_arrays equals the length of its auxiliary_arrays list. No-ops when the columns are absent. |
 | `aux_arrays_chromatograms_metadata` | `aux_arrays` | error | rederive | Each chromatogram's declared number_of_auxiliary_arrays equals the length of its auxiliary_arrays list. |
@@ -412,4 +412,5 @@ _Packed parallel-facet layout for wavelength (UV/DAD/EMR) spectrum metadata. Mir
 | `spectrum` | yes | `MS_1003060_number_of_data_points` | `uint` | no |
 | `spectrum` | yes | `number_of_auxiliary_arrays` | `uint` | no |
 | `scan` | no | `source_index` | `uint` | yes |
+
 
