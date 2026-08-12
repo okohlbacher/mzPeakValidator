@@ -1751,7 +1751,7 @@ def p_aux_arrays(ar, rule, rep, params):
 def p_zip_stored(ar, rule, rep, params):
     """Container MUST (Phase 6): mzPeak ZIP members MUST be stored uncompressed (compress_type STORED).
     Directory archives have no ZIP and are skipped."""
-    if ar._tmp is None or not ar.path.is_file():
+    if ar._zip is None or not ar.path.is_file():
         return
     sev = rule.get("severity", "error")
     try:
