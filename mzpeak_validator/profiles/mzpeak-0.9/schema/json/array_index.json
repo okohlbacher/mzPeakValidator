@@ -98,11 +98,12 @@
               "format": "curie"
             },
             "buffer_priority": {
-                "type": "string",
+                "type": ["string", "null"],
                 "description": "A flag to indicate this array is the representative instance of this array type. The primary array of its type SHOULD have a simplified name, otherwise the writer should make it as unique as possible without sacrificing readability.",
                 "enum": [
                     "primary",
-                    "secondary"
+                    "secondary",
+                    null
                 ]
             },
             "sorting_rank": {

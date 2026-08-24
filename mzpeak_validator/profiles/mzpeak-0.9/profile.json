@@ -1,50 +1,222 @@
 {
-  "profile_id": "mzpeak-0.9",
-  "mzpeak_spec": {
-    "version": "0.9",
-    "commit": "85442bd68ecc6a8b8a0e3562bd9b6c3219c96e2f",
-    "url": "https://github.com/HUPO-PSI/mzPeak-specification",
-    "note": "Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0."
+ "profile_id": "mzpeak-0.9",
+ "mzpeak_spec": {
+  "version": "0.9",
+  "commit": "85442bd68ecc6a8b8a0e3562bd9b6c3219c96e2f",
+  "url": "https://github.com/HUPO-PSI/mzPeak-specification",
+  "note": "Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0."
+ },
+ "rule_primitive_catalog": "1.11",
+ "extends": null,
+ "severity_model": "hard-errors-nondemotable",
+ "conformance_axes": [
+  "well-formed",
+  "schema",
+  "numeric",
+  "index",
+  "cv",
+  "cv-placement",
+  "integrity",
+  "imaging",
+  "performance"
+ ],
+ "artifacts": [
+  {
+   "role": "cv",
+   "id": "MS",
+   "version": "4.1.257",
+   "path": "cv/psi-ms.obo.gz",
+   "sha256": null
   },
-  "rule_primitive_catalog": "1.10",
-  "extends": null,
-  "severity_model": "hard-errors-nondemotable",
-  "conformance_axes": ["well-formed", "schema", "numeric", "index", "cv", "cv-placement", "integrity", "imaging", "performance"],
-  "artifacts": [
-    {"role": "cv", "id": "MS",  "version": "4.1.257",    "path": "cv/psi-ms.obo.gz", "sha256": null},
-    {"role": "cv", "id": "IMS", "version": "1.1.0",      "path": "cv/imagingMS.obo", "sha256": null},
-    {"role": "cv", "id": "UO",  "version": "2026-01-16", "path": "cv/uo.obo",        "sha256": null},
-    {"role": "cv", "id": "MZP", "version": "0.1.0",      "path": "cv/mzpeak.obo",    "sha256": null},
-    {"role": "json-schema", "id": "mzpeak_index",          "path": "schema/json/mzpeak_index.json",          "sha256": null},
-    {"role": "json-schema", "id": "cv_list",               "path": "schema/json/cv_list.json",               "sha256": null},
-    {"role": "json-schema", "id": "file_description",       "path": "schema/json/file_description.json",       "sha256": null},
-    {"role": "json-schema", "id": "instrument_configuration","path": "schema/json/instrument_configuration.json","sha256": null},
-    {"role": "json-schema", "id": "software",              "path": "schema/json/software.json",              "sha256": null},
-    {"role": "json-schema", "id": "sample",                "path": "schema/json/sample.json",                "sha256": null},
-    {"role": "json-schema", "id": "data_processing",       "path": "schema/json/data_processing.json",       "sha256": null},
-    {"role": "json-schema", "id": "scan_settings_list",    "path": "schema/json/scan_settings_list.json",    "sha256": null},
-    {"role": "json-schema", "id": "ms_run",                "path": "schema/json/ms_run.json",                "sha256": null},
-    {"role": "json-schema", "id": "array_index",           "path": "schema/json/array_index.json",           "sha256": null},
-    {"role": "json-schema", "id": "auxiliary_array",       "path": "schema/json/auxiliary_array.json",       "sha256": null},
-    {"role": "json-schema", "id": "param",                 "path": "schema/json/param.json",                 "sha256": null},
-    {"role": "columns", "id": "spectra_metadata", "path": "schema/tables/spectra_metadata.columns.json", "sha256": null},
-    {"role": "columns", "id": "spectra_data",     "path": "schema/tables/spectra_data.columns.json",     "sha256": null},
-    {"role": "columns", "id": "spectra_peaks",    "path": "schema/tables/spectra_peaks.columns.json",    "sha256": null},
-    {"role": "columns", "id": "chromatograms_metadata", "path": "schema/tables/chromatograms_metadata.columns.json", "sha256": null},
-    {"role": "columns", "id": "wavelength_spectra_metadata", "path": "schema/tables/wavelength_spectra_metadata.columns.json", "sha256": null},
-    {"role": "columns", "id": "wavelength_spectra_data", "path": "schema/tables/wavelength_spectra_data.columns.json", "sha256": null},
-    {"role": "rules", "path": "rules/structural.rules.json", "sha256": null},
-    {"role": "rules", "path": "rules/cv.rules.json",         "sha256": null},
-    {"role": "rules", "path": "rules/numeric.rules.json",    "sha256": null},
-    {"role": "rules", "path": "rules/metadata.rules.json",   "sha256": null},
-    {"role": "rules", "path": "rules/imaging.rules.json",    "sha256": null},
-    {"role": "rules", "path": "rules/perf.rules.json",       "sha256": null},
-    {"role": "rules", "path": "rules/semantic.rules.json",   "sha256": null},
-    {"role": "rules", "path": "rules/layout.rules.json",      "sha256": null},
-    {"role": "rules", "path": "rules/container.rules.json",   "sha256": null},
-    {"role": "cv_mapping", "path": "cv_mapping/table_rules.json",         "sha256": null},
-    {"role": "cv_mapping", "path": "cv_mapping/imaging_table_rules.json", "sha256": null},
-    {"role": "cv_mapping", "path": "cv_mapping/semantic_rules.json",      "sha256": null}
-  ],
-  "notes": "sha256 fields are filled by a release `--seal` step (TODO). The engine reads artifacts by path; content-addressing is not yet enforced in v0.9."
+  {
+   "role": "cv",
+   "id": "IMS",
+   "version": "1.1.0",
+   "path": "cv/imagingMS.obo",
+   "sha256": null
+  },
+  {
+   "role": "cv",
+   "id": "UO",
+   "version": "2026-01-16",
+   "path": "cv/uo.obo",
+   "sha256": null
+  },
+  {
+   "role": "cv",
+   "id": "MZP",
+   "version": "0.1.0",
+   "path": "cv/mzpeak.obo",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "mzpeak_index",
+   "path": "schema/json/mzpeak_index.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "cv_list",
+   "path": "schema/json/cv_list.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "file_description",
+   "path": "schema/json/file_description.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "instrument_configuration",
+   "path": "schema/json/instrument_configuration.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "software",
+   "path": "schema/json/software.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "sample",
+   "path": "schema/json/sample.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "data_processing",
+   "path": "schema/json/data_processing.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "scan_settings_list",
+   "path": "schema/json/scan_settings_list.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "ms_run",
+   "path": "schema/json/ms_run.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "array_index",
+   "path": "schema/json/array_index.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "auxiliary_array",
+   "path": "schema/json/auxiliary_array.json",
+   "sha256": null
+  },
+  {
+   "role": "json-schema",
+   "id": "param",
+   "path": "schema/json/param.json",
+   "sha256": null
+  },
+  {
+   "role": "columns",
+   "id": "spectra_metadata",
+   "path": "schema/tables/spectra_metadata.columns.json",
+   "sha256": null
+  },
+  {
+   "role": "columns",
+   "id": "spectra_data",
+   "path": "schema/tables/spectra_data.columns.json",
+   "sha256": null
+  },
+  {
+   "role": "columns",
+   "id": "spectra_peaks",
+   "path": "schema/tables/spectra_peaks.columns.json",
+   "sha256": null
+  },
+  {
+   "role": "columns",
+   "id": "chromatograms_metadata",
+   "path": "schema/tables/chromatograms_metadata.columns.json",
+   "sha256": null
+  },
+  {
+   "role": "columns",
+   "id": "wavelength_spectra_metadata",
+   "path": "schema/tables/wavelength_spectra_metadata.columns.json",
+   "sha256": null
+  },
+  {
+   "role": "columns",
+   "id": "wavelength_spectra_data",
+   "path": "schema/tables/wavelength_spectra_data.columns.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/structural.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/cv.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/numeric.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/metadata.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/imaging.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/perf.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/semantic.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/layout.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "rules",
+   "path": "rules/container.rules.json",
+   "sha256": null
+  },
+  {
+   "role": "cv_mapping",
+   "path": "cv_mapping/table_rules.json",
+   "sha256": null
+  },
+  {
+   "role": "cv_mapping",
+   "path": "cv_mapping/imaging_table_rules.json",
+   "sha256": null
+  },
+  {
+   "role": "cv_mapping",
+   "path": "cv_mapping/semantic_rules.json",
+   "sha256": null
+  }
+ ],
+ "notes": "sha256 fields are filled by a release `--seal` step (TODO). The engine reads artifacts by path; content-addressing is not yet enforced in v0.9."
 }

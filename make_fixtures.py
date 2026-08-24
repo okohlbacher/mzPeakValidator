@@ -355,6 +355,28 @@ def build_all(out_root):
     case("fail", "index_file_description_bad", _meta(), _data(S, MZ, IN), "FAIL", "index_schema_valid",
          extra_metadata={"file_description": _bad_fd})
 
+    # Issue 1: split-layout spectrum_representation all-null -> spectrum_representation_not_null
+    smf_null_repr = pa.table({
+        "index": pa.array(range(3), pa.uint64()),
+        "ms_level": pa.array([1, 1, 1], pa.uint8()),
+        "spectrum_representation": pa.array([None, None, None], pa.large_string()),
+        "number_of_data_points": pa.array([4, 4, 4], pa.uint64()),
+        "spectrum_type": pa.array(["mass spectrum"] * 3, pa.large_string()),
+    }).replace_schema_metadata({b"spectrum_count": b"3", b"spectrum_data_point_count": b"12"})
+    _write_split(os.path.join(out_root, "fail", "spectrum_representation_null"),
+                 smf_null_repr, _split_scans(), _data(S, MZ, IN),
+                 "FAIL", "spectrum_representation_not_null")
+    cases.append("fail/spectrum_representation_null")
+
+    # Issue 2a: split-layout with number_of_data_points > 0 but spectra_data has 0 rows
+    empty_data = pa.table({"point": pa.StructArray.from_arrays(
+        [pa.array([], pa.uint64()), pa.array([], pa.float64()), pa.array([], pa.float32())],
+        names=["spectrum_index", "mz", "intensity"])})
+    _write_split(os.path.join(out_root, "fail", "data_points_no_data_rows"),
+                 _split_meta_flat(), _split_scans(), empty_data,
+                 "FAIL", "data_points_imply_spectra_data_rows")
+    cases.append("fail/data_points_no_data_rows")
+
     return cases
 
 if __name__ == "__main__":

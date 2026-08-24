@@ -1,157 +1,507 @@
 {
-  "about": {
-    "file": "numeric.rules.json",
-    "axis": "numeric + integrity + index",
-    "purpose": "Value-level integrity of the signal arrays and the keys that tie tables together: counts agree, m/z is sorted and finite, intensity is non-negative, dtypes fit their role, foreign keys resolve, and the spectrum index is well-formed.",
-    "applies_to": "point-layout archives. Rules that read point.* no-op on chunk/numpress layouts (the column is absent), so those layouts pass the layout-independent checks and skip the rest. Most rules here are DATA_SCAN rules, skipped under --quick (footer_count_equals_rows is cheap and still runs).",
-    "null_semantics": "Arrow nulls are LEGITIMATE (sparse/null-marking): m/z and number_of_data_points may be null. Rules treat nulls as OK (counts as 0; skipped in monotonic/finite). Only genuine NaN/inf VALUES are flagged (see mz_finite_data). Do not 'fix' a rule to reject nulls.",
-    "how_to_amend": "Each rule instantiates a primitive in mzpeak_validator.py. Copy a rule and edit params to retarget a column/table; the engine reads only id/primitive/severity/recovery/params. 'about'/'doc' are ignored.",
-    "primitives": {
-      "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.",
-      "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
-      "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
-      "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
-      "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
-      "foreign_key": "params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).",
-      "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored).",
-      "grouped_count_equals": "params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows."
-    }
+ "about": {
+  "file": "numeric.rules.json",
+  "axis": "numeric + integrity + index",
+  "purpose": "Value-level integrity of the signal arrays and the keys that tie tables together: counts agree, m/z is sorted and finite, intensity is non-negative, dtypes fit their role, foreign keys resolve, and the spectrum index is well-formed.",
+  "applies_to": "point-layout archives. Rules that read point.* no-op on chunk/numpress layouts (the column is absent), so those layouts pass the layout-independent checks and skip the rest. Most rules here are DATA_SCAN rules, skipped under --quick (footer_count_equals_rows is cheap and still runs).",
+  "null_semantics": "Arrow nulls are LEGITIMATE (sparse/null-marking): m/z and number_of_data_points may be null. Rules treat nulls as OK (counts as 0; skipped in monotonic/finite). Only genuine NaN/inf VALUES are flagged (see mz_finite_data). Do not 'fix' a rule to reject nulls.",
+  "how_to_amend": "Each rule instantiates a primitive in mzpeak_validator.py. Copy a rule and edit params to retarget a column/table; the engine reads only id/primitive/severity/recovery/params. 'about'/'doc' are ignored.",
+  "primitives": {
+   "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.",
+   "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
+   "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
+   "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
+   "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
+   "foreign_key": "params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).",
+   "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored).",
+   "grouped_count_equals": "params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows."
+  }
+ },
+ "rules": [
+  {
+   "id": "spectrum_count_agreement",
+   "primitive": "footer_count_equals_rows",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "spectra_metadata footer 'spectrum_count' equals the number of spectra = non-null spectrum.index entries (count_column). NOT total rows: in the packed parallel-facet layout the table is as long as its longest facet, so a PASEF/TIMS run with many precursors per MS2 spectrum has far more rows than spectra (e.g. SBA415: 278942 rows, 44296 spectra). Counting non-null spectrum.index makes the footer agree for both plain LC-MS and packed layouts. recovery=rederive: the true count is derivable.",
+   "params": {
+    "file": "spectra_metadata",
+    "footer_key": "spectrum_count",
+    "count_column": "spectrum.index"
+   }
   },
-  "rules": [
-    {"id": "spectrum_count_agreement", "primitive": "footer_count_equals_rows", "severity": "error", "recovery": "rederive",
-     "doc": "spectra_metadata footer 'spectrum_count' equals the number of spectra = non-null spectrum.index entries (count_column). NOT total rows: in the packed parallel-facet layout the table is as long as its longest facet, so a PASEF/TIMS run with many precursors per MS2 spectrum has far more rows than spectra (e.g. SBA415: 278942 rows, 44296 spectra). Counting non-null spectrum.index makes the footer agree for both plain LC-MS and packed layouts. recovery=rederive: the true count is derivable.",
-     "params": {"file": "spectra_metadata", "footer_key": "spectrum_count", "count_column": "spectrum.index"}},
-
-    {"id": "data_points_sum", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive",
-     "doc": "Point-layout integrity: sum of per-spectrum number_of_data_points equals the spectra_data row count. 'guard' point.intensity gates this to the point layout (skips chunk/numpress). Null counts (centroid spectra) count as 0. Preferred over a footer check because the writer's spectra_data footer is unreliable.",
-     "params": {"file": "spectra_data", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003060_number_of_data_points", "guard": "point.intensity"}},
-
-    {"id": "mz_finite_data", "primitive": "column_predicate", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.mz has no NaN/inf VALUES (Arrow nulls are allowed -- see null_semantics). Distinct from monotonicity; a NaN both breaks sorting and is meaningless as a mass.",
-     "params": {"file": "spectra_data", "column": "point.mz", "op": "finite"}},
-
-    {"id": "intensity_nonneg_data", "primitive": "column_predicate", "severity": "error", "recovery": "normalize",
-     "doc": "spectra_data point.intensity >= 0. recovery=normalize (clamp to 0) is LOSSY, so it is opt-in only (repair --aggressive); validation just reports. To forbid the clamp entirely, set recovery to 'none'.",
-     "params": {"file": "spectra_data", "column": "point.intensity", "op": "ge", "value": 0}},
-
-    {"id": "intensity_nonneg_peaks", "primitive": "column_predicate", "severity": "error", "recovery": "normalize",
-     "doc": "Same non-negativity check on the centroided spectra_peaks table.",
-     "params": {"file": "spectra_peaks", "column": "point.intensity", "op": "ge", "value": 0}},
-
-    {"id": "mz_monotonic_data", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair",
-     "doc": "Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing -- but only when the array index declares point.mz sorted (non-null sorting_rank). A file that declares m/z unsorted is conformant as-is and is skipped (info). Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless).",
-     "params": {"file": "spectra_data", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
-
-    {"id": "mz_monotonic_peaks", "primitive": "grouped_monotonic", "severity": "error", "recovery": "reorder_pair",
-     "doc": "Same per-spectrum m/z ordering check on spectra_peaks, likewise gated on the declared sorting_rank of point.mz.",
-     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "column": "point.mz", "direction": "nondecreasing"}},
-
-    {"id": "intensity_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.intensity is a numeric type. Accepts float, double, or signed integer (spec signal-data.md e7f3447: '32-bit integers'). Unsigned integer is NOT permitted by the spec. m/z is still float-only. 'int' matches any signed integer width (int8/16/32/64); narrow to 'int32' is not yet enforced at the logical-type level.",
-     "params": {"file": "spectra_data", "column": "point.intensity", "role": "intensity", "allowed": ["float", "double", "int"]}},
-
-    {"id": "mz_dtype_data", "primitive": "dtype_role", "severity": "error", "recovery": "none",
-     "doc": "spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json.",
-     "params": {"file": "spectra_data", "column": "point.mz", "role": "m/z", "allowed": ["double", "float"]}},
-
-    {"id": "point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable.",
-     "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
-
-    {"id": "chrom_point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "Every chromatograms_data chunk.chromatogram_index references an existing chromatograms_metadata chromatogram.index. The chromatogram analog of point_fk_data; no-ops on archives without chromatograms.",
-     "params": {"file": "chromatograms_data", "column": "chunk.chromatogram_index", "ref_file": "chromatograms_metadata", "ref_column": "chromatogram.index", "allow_null": true}},
-
-    {"id": "point_fk_peaks", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "Same FK integrity from spectra_peaks back to spectrum.index.",
-     "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index"}},
-
-    {"id": "scan_source_index_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "scan.source_index resolves to a spectrum.index (both in spectra_metadata). allow_null=true: in the packed parallel-facet layout the scan facet is null on rows owned by another facet (e.g. precursor-only PASEF rows), so child nulls are expected and not flagged. recovery=rebuild: the scan<->spectrum map is derivable.",
-     "params": {"file": "spectra_metadata", "column": "scan.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
-
-    {"id": "spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
-     "doc": "spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
-     "params": {"file": "spectra_metadata", "column": "spectrum.index"}},
-
-    {"id": "chromatogram_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
-     "doc": "chromatogram.index is 0-based contiguous (0..k-1) over its non-null entries. The chromatogram analog of spectrum_index_contiguous; no-ops on archives without chromatograms_metadata.",
-     "params": {"file": "chromatograms_metadata", "column": "chromatogram.index"}},
-
-    {"id": "wavelength_spectrum_index_contiguous", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
-     "doc": "wavelength_spectra_metadata spectrum.index is 0-based contiguous over non-null entries. No-ops when absent.",
-     "params": {"file": "wavelength_spectra_metadata", "column": "spectrum.index"}},
-
-    {"id": "precursor_source_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from.",
-     "params": {"file": "spectra_metadata", "column": "precursor.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
-
-    {"id": "selected_ion_source_fk", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "selected_ion.source_index resolves to a spectrum.index. allow_null (packed layout).",
-     "params": {"file": "spectra_metadata", "column": "selected_ion.source_index", "ref_file": "spectra_metadata", "ref_column": "spectrum.index", "allow_null": true}},
-
-    {"id": "per_spectrum_data_points", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
-     "doc": "Per-spectrum integrity: each spectrum's profile-point rows in spectra_data equal its declared number_of_data_points (null counted as 0). Stronger than data_points_sum -- catches localized/swapped count corruption a global sum hides. Gated to the point layout via 'guard'.",
-     "params": {"file": "spectra_data", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003060_number_of_data_points", "key_column": "spectrum.index"}},
-
-    {"id": "per_spectrum_peaks", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
-     "doc": "Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points.",
-     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "spectrum.MS_1003059_number_of_peaks", "key_column": "spectrum.index"}},
-
-    {"id": "wavelength_point_fk_data", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "wavelength_spectra_data point.wavelength_spectrum_index must resolve to wavelength_spectra_metadata spectrum.index. The wavelength-spectra analog of point_fk_data. No-ops when either table is absent.",
-     "params": {"file": "wavelength_spectra_data", "column": "point.wavelength_spectrum_index", "ref_file": "wavelength_spectra_metadata", "ref_column": "spectrum.index"}},
-
-    {"id": "scan_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "Split-layout analog of scan_source_index_fk: every spectra_metadata_scans row's source_index must resolve to spectra_metadata.index (flat PK). No-ops on packed archives because spectra_metadata_scans does not exist there.",
-     "params": {"file": "spectra_metadata_scans", "column": "source_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
-
-    {"id": "precursor_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "Split-layout analog of precursor_source_fk: every spectra_metadata_precursors source_index must resolve to spectra_metadata.index. No-ops on packed archives.",
-     "params": {"file": "spectra_metadata_precursors", "column": "source_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
-
-    {"id": "selected_ion_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "Split-layout analog of selected_ion_source_fk: every spectra_metadata_selected_ions source_index must resolve to spectra_metadata.index. No-ops on packed archives.",
-     "params": {"file": "spectra_metadata_selected_ions", "column": "source_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
-
-    {"id": "point_fk_data_split", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "Split-layout analog of point_fk_data: every spectra_data point.spectrum_index must resolve to the flat spectra_metadata.index PK. No-ops on packed archives (spectra_metadata.index is absent in the packed struct layout; point_fk_data covers that case via spectrum.index).",
-     "params": {"file": "spectra_data", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
-
-    {"id": "point_fk_peaks_split", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "Split-layout analog of point_fk_peaks for the centroided table.",
-     "params": {"file": "spectra_peaks", "column": "point.spectrum_index", "ref_file": "spectra_metadata", "ref_column": "index"}},
-
-    {"id": "spectrum_index_contiguous_split", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
-     "doc": "Split-layout analog of spectrum_index_contiguous: the flat spectra_metadata.index must be 0-based contiguous. No-ops on packed archives (spectrum.index covers that case).",
-     "params": {"file": "spectra_metadata", "column": "index"}},
-
-    {"id": "data_points_sum_split", "primitive": "count_sum_equals_rows", "severity": "error", "recovery": "rederive",
-     "doc": "Split-layout analog of data_points_sum: sum of per-spectrum number_of_data_points (plain flat column name) equals the spectra_data row count. Gated on point.intensity (skips chunk-layout archives). No-ops on packed archives because 'number_of_data_points' (flat) is absent there.",
-     "params": {"file": "spectra_data", "count_file": "spectra_metadata", "count_column": "number_of_data_points", "guard": "point.intensity"}},
-
-    {"id": "per_spectrum_data_points_split", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
-     "doc": "Split-layout analog of per_spectrum_data_points: per-spectrum count check using flat column names (number_of_data_points, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives.",
-     "params": {"file": "spectra_data", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "number_of_data_points", "key_column": "index"}},
-
-    {"id": "per_spectrum_peaks_split", "primitive": "grouped_count_equals", "severity": "error", "recovery": "rederive",
-     "doc": "Split-layout analog of per_spectrum_peaks: per-spectrum peak count check using flat column names (number_of_peaks, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives.",
-     "params": {"file": "spectra_peaks", "group": "point.spectrum_index", "guard": "point.intensity", "count_file": "spectra_metadata", "count_column": "number_of_peaks", "key_column": "index"}},
-
-    {"id": "chrom_point_fk_data_split", "primitive": "foreign_key", "severity": "error", "recovery": "none",
-     "doc": "Split-layout analog of chrom_point_fk_data: every chromatograms_data chunk.chromatogram_index must resolve to the flat chromatograms_metadata.index PK. No-ops on packed archives (packed column is chromatogram.index).",
-     "params": {"file": "chromatograms_data", "column": "chunk.chromatogram_index", "ref_file": "chromatograms_metadata", "ref_column": "index", "allow_null": true}},
-
-    {"id": "chromatogram_index_contiguous_split", "primitive": "index_contiguous", "severity": "warning", "recovery": "none",
-     "doc": "Split-layout analog of chromatogram_index_contiguous: the flat chromatograms_metadata.index must be 0-based contiguous. No-ops on packed archives.",
-     "params": {"file": "chromatograms_metadata", "column": "index"}},
-
-    {"id": "chrom_precursor_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "Split-layout: every chromatograms_metadata_precursors.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives (flat 'index' column absent) and on archives without chromatogram precursors.",
-     "params": {"file": "chromatograms_metadata_precursors", "column": "source_index", "ref_file": "chromatograms_metadata", "ref_column": "index"}},
-
-    {"id": "chrom_selected_ion_source_fk_split", "primitive": "foreign_key", "severity": "error", "recovery": "rebuild",
-     "doc": "Split-layout: every chromatograms_metadata_selected_ions.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives and on archives without chromatogram selected_ions.",
-     "params": {"file": "chromatograms_metadata_selected_ions", "column": "source_index", "ref_file": "chromatograms_metadata", "ref_column": "index"}}
-  ]
+  {
+   "id": "data_points_sum",
+   "primitive": "count_sum_equals_rows",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Point-layout integrity: sum of per-spectrum number_of_data_points equals the spectra_data row count. 'guard' point.intensity gates this to the point layout (skips chunk/numpress). Null counts (centroid spectra) count as 0. Preferred over a footer check because the writer's spectra_data footer is unreliable.",
+   "params": {
+    "file": "spectra_data",
+    "count_file": "spectra_metadata",
+    "count_column": "spectrum.MS_1003060_number_of_data_points",
+    "guard": "point.intensity"
+   }
+  },
+  {
+   "id": "mz_finite_data",
+   "primitive": "column_predicate",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "spectra_data point.mz has no NaN/inf VALUES (Arrow nulls are allowed -- see null_semantics). Distinct from monotonicity; a NaN both breaks sorting and is meaningless as a mass.",
+   "params": {
+    "file": "spectra_data",
+    "column": "point.mz",
+    "op": "finite"
+   }
+  },
+  {
+   "id": "intensity_nonneg_data",
+   "primitive": "column_predicate",
+   "severity": "error",
+   "recovery": "normalize",
+   "doc": "spectra_data point.intensity >= 0. recovery=normalize (clamp to 0) is LOSSY, so it is opt-in only (repair --aggressive); validation just reports. To forbid the clamp entirely, set recovery to 'none'.",
+   "params": {
+    "file": "spectra_data",
+    "column": "point.intensity",
+    "op": "ge",
+    "value": 0
+   }
+  },
+  {
+   "id": "intensity_nonneg_peaks",
+   "primitive": "column_predicate",
+   "severity": "error",
+   "recovery": "normalize",
+   "doc": "Same non-negativity check on the centroided spectra_peaks table.",
+   "params": {
+    "file": "spectra_peaks",
+    "column": "point.intensity",
+    "op": "ge",
+    "value": 0
+   }
+  },
+  {
+   "id": "mz_monotonic_data",
+   "primitive": "grouped_monotonic",
+   "severity": "error",
+   "recovery": "reorder_pair",
+   "doc": "Within each spectrum (grouped by point.spectrum_index), spectra_data point.mz is non-decreasing -- but only when the array index declares point.mz sorted (non-null sorting_rank). A file that declares m/z unsorted is conformant as-is and is skipped (info). Uses a stable argsort, so it catches inversions even when a spectrum's rows are interleaved/non-contiguous (regression: 'interleaved_unsorted_mz'). recovery=reorder_pair re-sorts m/z and its parallel intensity together (lossless).",
+   "params": {
+    "file": "spectra_data",
+    "group": "point.spectrum_index",
+    "column": "point.mz",
+    "direction": "nondecreasing"
+   }
+  },
+  {
+   "id": "mz_monotonic_peaks",
+   "primitive": "grouped_monotonic",
+   "severity": "error",
+   "recovery": "reorder_pair",
+   "doc": "Same per-spectrum m/z ordering check on spectra_peaks, likewise gated on the declared sorting_rank of point.mz.",
+   "params": {
+    "file": "spectra_peaks",
+    "group": "point.spectrum_index",
+    "column": "point.mz",
+    "direction": "nondecreasing"
+   }
+  },
+  {
+   "id": "intensity_dtype_data",
+   "primitive": "dtype_role",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "spectra_data point.intensity is a numeric type. Accepts float, double, or signed integer (spec signal-data.md e7f3447: '32-bit integers'). Unsigned integer is NOT permitted by the spec. m/z is still float-only. 'int' matches any signed integer width (int8/16/32/64); narrow to 'int32' is not yet enforced at the logical-type level.",
+   "params": {
+    "file": "spectra_data",
+    "column": "point.intensity",
+    "role": "intensity",
+    "allowed": [
+     "float",
+     "double",
+     "int"
+    ]
+   }
+  },
+  {
+   "id": "mz_dtype_data",
+   "primitive": "dtype_role",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "spectra_data point.mz is a floating type (double or float), never integer. Width-agnostic, matching the relaxed column schema; the hard guarantee here is 'must be float, not int'. Width acceptance is the HUPO-PSI #11 question, decided in spectra_data.columns.json.",
+   "params": {
+    "file": "spectra_data",
+    "column": "point.mz",
+    "role": "m/z",
+    "allowed": [
+     "double",
+     "float"
+    ]
+   }
+  },
+  {
+   "id": "point_fk_data",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Every spectra_data point.spectrum_index points to an existing spectra_metadata spectrum.index (and is non-null). A dangling FK means orphaned signal with no metadata -- not auto-recoverable.",
+   "params": {
+    "file": "spectra_data",
+    "column": "point.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index"
+   }
+  },
+  {
+   "id": "chrom_point_fk_data",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Every chromatograms_data chunk.chromatogram_index references an existing chromatograms_metadata chromatogram.index. The chromatogram analog of point_fk_data; no-ops on archives without chromatograms.",
+   "params": {
+    "file": "chromatograms_data",
+    "column": "chunk.chromatogram_index",
+    "ref_file": "chromatograms_metadata",
+    "ref_column": "chromatogram.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "point_fk_peaks",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Same FK integrity from spectra_peaks back to spectrum.index.",
+   "params": {
+    "file": "spectra_peaks",
+    "column": "point.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index"
+   }
+  },
+  {
+   "id": "scan_source_index_fk",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "scan.source_index resolves to a spectrum.index (both in spectra_metadata). allow_null=true: in the packed parallel-facet layout the scan facet is null on rows owned by another facet (e.g. precursor-only PASEF rows), so child nulls are expected and not flagged. recovery=rebuild: the scan<->spectrum map is derivable.",
+   "params": {
+    "file": "spectra_metadata",
+    "column": "scan.source_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "spectrum_index_contiguous",
+   "primitive": "index_contiguous",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "spectrum.index is 0-based contiguous (0..k-1) over its non-null entries (packed-facet padding rows are ignored). Only a WARNING: a gapped index is unusual but still readable as long as the FKs resolve. Raise to severity 'error' if your profile requires dense indices.",
+   "params": {
+    "file": "spectra_metadata",
+    "column": "spectrum.index"
+   }
+  },
+  {
+   "id": "chromatogram_index_contiguous",
+   "primitive": "index_contiguous",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "chromatogram.index is 0-based contiguous (0..k-1) over its non-null entries. The chromatogram analog of spectrum_index_contiguous; no-ops on archives without chromatograms_metadata.",
+   "params": {
+    "file": "chromatograms_metadata",
+    "column": "chromatogram.index"
+   }
+  },
+  {
+   "id": "wavelength_spectrum_index_contiguous",
+   "primitive": "index_contiguous",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "wavelength_spectra_metadata spectrum.index is 0-based contiguous over non-null entries. No-ops when absent.",
+   "params": {
+    "file": "wavelength_spectra_metadata",
+    "column": "spectrum.index"
+   }
+  },
+  {
+   "id": "precursor_source_fk",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "precursor.source_index resolves to a spectrum.index. allow_null (packed layout). Ties each precursor back to the spectrum it was isolated from.",
+   "params": {
+    "file": "spectra_metadata",
+    "column": "precursor.source_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "selected_ion_source_fk",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "selected_ion.source_index resolves to a spectrum.index. allow_null (packed layout).",
+   "params": {
+    "file": "spectra_metadata",
+    "column": "selected_ion.source_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "per_spectrum_data_points",
+   "primitive": "grouped_count_equals",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Per-spectrum integrity: each spectrum's profile-point rows in spectra_data equal its declared number_of_data_points (null counted as 0). Stronger than data_points_sum -- catches localized/swapped count corruption a global sum hides. Gated to the point layout via 'guard'.",
+   "params": {
+    "file": "spectra_data",
+    "group": "point.spectrum_index",
+    "guard": "point.intensity",
+    "count_file": "spectra_metadata",
+    "count_column": "spectrum.MS_1003060_number_of_data_points",
+    "key_column": "spectrum.index"
+   }
+  },
+  {
+   "id": "per_spectrum_peaks",
+   "primitive": "grouped_count_equals",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Per-spectrum integrity for the centroided table: each spectrum's peak rows in spectra_peaks equal its declared number_of_peaks (null counted as 0). The missing peaks analog of per_spectrum_data_points.",
+   "params": {
+    "file": "spectra_peaks",
+    "group": "point.spectrum_index",
+    "guard": "point.intensity",
+    "count_file": "spectra_metadata",
+    "count_column": "spectrum.MS_1003059_number_of_peaks",
+    "key_column": "spectrum.index"
+   }
+  },
+  {
+   "id": "wavelength_point_fk_data",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "wavelength_spectra_data point.wavelength_spectrum_index must resolve to wavelength_spectra_metadata spectrum.index. The wavelength-spectra analog of point_fk_data. No-ops when either table is absent.",
+   "params": {
+    "file": "wavelength_spectra_data",
+    "column": "point.wavelength_spectrum_index",
+    "ref_file": "wavelength_spectra_metadata",
+    "ref_column": "spectrum.index"
+   }
+  },
+  {
+   "id": "scan_source_fk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "Split-layout analog of scan_source_index_fk: every spectra_metadata_scans row's source_index must resolve to spectra_metadata.index (flat PK). No-ops on packed archives because spectra_metadata_scans does not exist there.",
+   "params": {
+    "file": "spectra_metadata_scans",
+    "column": "source_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "precursor_source_fk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "Split-layout analog of precursor_source_fk: every spectra_metadata_precursors source_index must resolve to spectra_metadata.index. No-ops on packed archives.",
+   "params": {
+    "file": "spectra_metadata_precursors",
+    "column": "source_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "selected_ion_source_fk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "Split-layout analog of selected_ion_source_fk: every spectra_metadata_selected_ions source_index must resolve to spectra_metadata.index. No-ops on packed archives.",
+   "params": {
+    "file": "spectra_metadata_selected_ions",
+    "column": "source_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "point_fk_data_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Split-layout analog of point_fk_data: every spectra_data point.spectrum_index must resolve to the flat spectra_metadata.index PK. No-ops on packed archives (spectra_metadata.index is absent in the packed struct layout; point_fk_data covers that case via spectrum.index).",
+   "params": {
+    "file": "spectra_data",
+    "column": "point.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "point_fk_peaks_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Split-layout analog of point_fk_peaks for the centroided table.",
+   "params": {
+    "file": "spectra_peaks",
+    "column": "point.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "spectrum_index_contiguous_split",
+   "primitive": "index_contiguous",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "Split-layout analog of spectrum_index_contiguous: the flat spectra_metadata.index must be 0-based contiguous. No-ops on packed archives (spectrum.index covers that case).",
+   "params": {
+    "file": "spectra_metadata",
+    "column": "index"
+   }
+  },
+  {
+   "id": "data_points_sum_split",
+   "primitive": "count_sum_equals_rows",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Split-layout analog of data_points_sum: sum of per-spectrum number_of_data_points (plain flat column name) equals the spectra_data row count. Gated on point.intensity (skips chunk-layout archives). No-ops on packed archives because 'number_of_data_points' (flat) is absent there.",
+   "params": {
+    "file": "spectra_data",
+    "count_file": "spectra_metadata",
+    "count_column": "number_of_data_points",
+    "guard": "point.intensity"
+   }
+  },
+  {
+   "id": "per_spectrum_data_points_split",
+   "primitive": "grouped_count_equals",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Split-layout analog of per_spectrum_data_points: per-spectrum count check using flat column names (number_of_data_points, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives.",
+   "params": {
+    "file": "spectra_data",
+    "group": "point.spectrum_index",
+    "guard": "point.intensity",
+    "count_file": "spectra_metadata",
+    "count_column": "number_of_data_points",
+    "key_column": "index"
+   }
+  },
+  {
+   "id": "per_spectrum_peaks_split",
+   "primitive": "grouped_count_equals",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Split-layout analog of per_spectrum_peaks: per-spectrum peak count check using flat column names (number_of_peaks, index). Gated on point.intensity; no-ops on chunk-layout and on packed archives.",
+   "params": {
+    "file": "spectra_peaks",
+    "group": "point.spectrum_index",
+    "guard": "point.intensity",
+    "count_file": "spectra_metadata",
+    "count_column": "number_of_peaks",
+    "key_column": "index"
+   }
+  },
+  {
+   "id": "chrom_point_fk_data_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Split-layout analog of chrom_point_fk_data: every chromatograms_data chunk.chromatogram_index must resolve to the flat chromatograms_metadata.index PK. No-ops on packed archives (packed column is chromatogram.index).",
+   "params": {
+    "file": "chromatograms_data",
+    "column": "chunk.chromatogram_index",
+    "ref_file": "chromatograms_metadata",
+    "ref_column": "index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "chromatogram_index_contiguous_split",
+   "primitive": "index_contiguous",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "Split-layout analog of chromatogram_index_contiguous: the flat chromatograms_metadata.index must be 0-based contiguous. No-ops on packed archives.",
+   "params": {
+    "file": "chromatograms_metadata",
+    "column": "index"
+   }
+  },
+  {
+   "id": "chrom_precursor_source_fk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "Split-layout: every chromatograms_metadata_precursors.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives (flat 'index' column absent) and on archives without chromatogram precursors.",
+   "params": {
+    "file": "chromatograms_metadata_precursors",
+    "column": "source_index",
+    "ref_file": "chromatograms_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "chrom_selected_ion_source_fk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "rebuild",
+   "doc": "Split-layout: every chromatograms_metadata_selected_ions.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives and on archives without chromatogram selected_ions.",
+   "params": {
+    "file": "chromatograms_metadata_selected_ions",
+    "column": "source_index",
+    "ref_file": "chromatograms_metadata",
+    "ref_column": "index"
+   }
+  },
+  {
+   "id": "spectrum_representation_not_null",
+   "primitive": "column_not_all_null",
+   "severity": "error",
+   "recovery": "recompute",
+   "doc": "Split-layout: spectra_metadata.spectrum_representation MUST NOT be entirely null. MS:1000525 (spectrum representation) is a MUST term per the CvMapping spec; an all-null column means every spectrum has unknown representation, which a conforming reader cannot use for read-planning. No-ops for packed-layout archives (column absent; cv_mapping covers those).",
+   "params": {
+    "file": "spectra_metadata",
+    "column": "spectrum_representation"
+   }
+  },
+  {
+   "id": "data_points_imply_spectra_data_rows",
+   "primitive": "count_implies_rows",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Split-layout: if any spectrum declares number_of_data_points > 0, spectra_data.parquet must have rows; and if spectra_data has rows, at least one spectrum must have number_of_data_points > 0. A mismatch means a conforming reader (which uses the count for read-planning) will either find nothing or ignore existing data. No-ops if number_of_data_points is absent.",
+   "params": {
+    "count_file": "spectra_metadata",
+    "count_column": "number_of_data_points",
+    "data_file": "spectra_data"
+   }
+  },
+  {
+   "id": "peaks_imply_spectra_peaks_rows",
+   "primitive": "count_implies_rows",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Split-layout: if any spectrum declares number_of_peaks > 0, spectra_peaks.parquet must have rows; and if spectra_peaks has rows, at least one spectrum must have number_of_peaks > 0. No-ops if number_of_peaks is absent.",
+   "params": {
+    "count_file": "spectra_metadata",
+    "count_column": "number_of_peaks",
+    "data_file": "spectra_peaks"
+   }
+  }
+ ]
 }

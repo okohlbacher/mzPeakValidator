@@ -5,8 +5,8 @@
 
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`85442bd68ecc`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.10` (the cross-language contract the engine implements)
-- **Rules:** 82 across 9 files
+- **Rule-primitive catalog:** `1.11` (the cross-language contract the engine implements)
+- **Rules:** 85 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -179,6 +179,9 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `chromatogram_index_contiguous_split` | `index_contiguous` | warning | none | Split-layout analog of chromatogram_index_contiguous: the flat chromatograms_metadata.index must be 0-based contiguous. No-ops on packed archives. |
 | `chrom_precursor_source_fk_split` | `foreign_key` | error | rebuild | Split-layout: every chromatograms_metadata_precursors.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives (flat 'index' column absent) and on archives without chromatogram precursors. |
 | `chrom_selected_ion_source_fk_split` | `foreign_key` | error | rebuild | Split-layout: every chromatograms_metadata_selected_ions.source_index must resolve to chromatograms_metadata.index. No-ops on packed archives and on archives without chromatogram selected_ions. |
+| `spectrum_representation_not_null` | `column_not_all_null` | error | recompute | Split-layout: spectra_metadata.spectrum_representation MUST NOT be entirely null. MS:1000525 (spectrum representation) is a MUST term per the CvMapping spec; an all-null column means every spectrum has unknown representation, which a conforming reader cannot use for read-planning. No-ops for packed-layout archives (column absent; cv_mapping covers those). |
+| `data_points_imply_spectra_data_rows` | `count_implies_rows` | error | none | Split-layout: if any spectrum declares number_of_data_points > 0, spectra_data.parquet must have rows; and if spectra_data has rows, at least one spectrum must have number_of_data_points > 0. A mismatch means a conforming reader (which uses the count for read-planning) will either find nothing or ignore existing data. No-ops if number_of_data_points is absent. |
+| `peaks_imply_spectra_peaks_rows` | `count_implies_rows` | error | none | Split-layout: if any spectrum declares number_of_peaks > 0, spectra_peaks.parquet must have rows; and if spectra_peaks has rows, at least one spectrum must have number_of_peaks > 0. No-ops if number_of_peaks is absent. |
 
 ### `imaging.rules.json`
 
@@ -412,5 +415,4 @@ _Packed parallel-facet layout for wavelength (UV/DAD/EMR) spectrum metadata. Mir
 | `spectrum` | yes | `MS_1003060_number_of_data_points` | `uint` | no |
 | `spectrum` | yes | `number_of_auxiliary_arrays` | `uint` | no |
 | `scan` | no | `source_index` | `uint` | yes |
-
 

@@ -81,10 +81,10 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.10"
+CATALOG_VERSION = "1.11"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
-                                    # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules
+                                    # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
 PROFILES_ROOT = Path(__file__).parent / "profiles"
 MAX_PER_RULE = 25                       # cap distinct findings per rule, then summarise the remainder
 _SUMMARY_RULE = {"id": "archive_summary", "primitive": "archive_summary", "recovery": "none"}
@@ -1776,6 +1776,50 @@ def p_column_order(ar, rule, rep, params):
             rep.add(rule, sev, f"{f}: facet '{top.name}' first column is '{top.type[0].name}', "
                     f"expected the key '{expected[top.name]}' first", {"file": f, "facet": top.name})
 
+def p_column_not_all_null(ar, rule, rep, params):
+    """A required column that exists must not be entirely null: at least one row must carry a
+    non-null value.  Useful for flat-layout columns that the cv_mapping primitive cannot reach
+    (cv_mapping gathers CURIE-inflected column names from packed structs; plain-named columns in
+    split-layout archives are invisible to it).  No-ops when the file or column is absent."""
+    f, col = params["file"], params["column"]
+    if not has(ar, f, col): return
+    n_rows = ar.num_rows(f)
+    if n_rows == 0: return
+    n_valid = 0
+    for (arr,) in ar.iter_batches(f, col):
+        n_valid += (pc.sum(pc.cast(pc.is_valid(arr), pa.int64())).as_py() or 0)
+    if n_valid == 0:
+        rep.add(rule, rule.get("severity", "error"),
+                f"{f}.{col}: column is entirely null across {n_rows} row(s); "
+                f"at least one non-null value is required",
+                {"file": f, "column": col}, recovery=rule.get("recovery", "none"))
+
+def p_count_implies_rows(ar, rule, rep, params):
+    """Cross-file aggregate consistency: if the sum of a count column > 0, the corresponding data
+    file must have rows; and if the data file has rows, the count column must have a positive sum.
+    Catches the case where counts claim data exists but the data facet is empty (or vice-versa) —
+    a conforming reader uses the counts for read-planning and will get nothing from an empty facet.
+    No-ops if the count file or count column is absent."""
+    count_file, count_col = params["count_file"], params["count_column"]
+    data_file = params["data_file"]
+    if not has(ar, count_file, count_col): return
+    count_sum = 0
+    for (arr,) in ar.iter_batches(count_file, count_col):
+        s = pc.sum(arr).as_py()
+        if s is not None: count_sum += s
+    data_rows = ar.num_rows(data_file) if ar.has_file(data_file) else 0
+    sev = rule.get("severity", "error")
+    if count_sum > 0 and data_rows == 0:
+        rep.add(rule, sev,
+                f"{count_file}.{count_col} sums to {count_sum} but {data_file} has 0 rows; "
+                f"a conforming reader will skip {data_file} and find nothing",
+                {"file": data_file, "count_sum": count_sum}, recovery="none")
+    elif data_rows > 0 and count_sum == 0:
+        rep.add(rule, sev,
+                f"{data_file} has {data_rows} rows but {count_file}.{count_col} is entirely "
+                f"null or zero; a conforming reader will not read {data_file}",
+                {"file": data_file, "data_rows": data_rows}, recovery="none")
+
 PRIMITIVES = {
     "index_files_present": p_index_files_present, "columns_present": p_columns_present,
     "data_kind_facet": p_data_kind_facet, "parquet_row_group_health": p_parquet_row_group_health,
@@ -1789,11 +1833,12 @@ PRIMITIVES = {
     "cv_mapping_json": p_cv_mapping_json,
     "chunk_columns": p_chunk_columns, "chunk_bounds": p_chunk_bounds, "aux_arrays": p_aux_arrays,
     "zip_stored": p_zip_stored, "column_order": p_column_order,
+    "column_not_all_null": p_column_not_all_null, "count_implies_rows": p_count_implies_rows,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
              "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates",
-             "chunk_bounds", "aux_arrays"}
+             "chunk_bounds", "aux_arrays", "column_not_all_null", "count_implies_rows"}
 
 # -------------------------------------------------------------------------------- profile cache
 @functools.lru_cache(maxsize=8)
