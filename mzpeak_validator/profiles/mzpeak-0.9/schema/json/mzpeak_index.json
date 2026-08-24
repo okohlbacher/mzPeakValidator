@@ -13,14 +13,12 @@
     "metadata": {
       "type": "object",
       "additionalProperties": true,
-      "required": [
-        "version"
-      ],
+      "required": ["version"],
       "properties": {
         "version": {
           "type": "string",
           "description": "The mzPeak file format version, formatted as a semantic version",
-          "pattern": "^\\d+\\.\\d+\\.\\d+$"
+          "pattern": "(?<major>\\d+)\\.(?<minor>\\d+)\\.(?<patch>\\d+)"
         },
         "id": {
           "type": "string",
@@ -66,7 +64,14 @@
         },
         "entity_type": {
           "type": "string",
-          "examples": ["spectrum", "chromatogram", "other", "proprietary", "wavelength_spectrum"],
+          "examples": [
+            "spectrum",
+            "chromatogram",
+            "other",
+            "proprietary",
+            "wavelength_spectrum"
+          ],
+          "$comment": "Controlled values are spelled with underscores, not spaces: `wavelength_spectrum`. A reader encountering a value outside the controlled list treats it as `other`, so this is intentionally not a closed `enum`.",
           "description": "The things being described in one facet or another by this file"
         },
         "data_kind": {
@@ -75,14 +80,19 @@
             "data_arrays",
             "metadata",
             "peaks",
+            "scans",
+            "precursors",
+            "selected_ions",
+            "products",
             "other",
             "proprietary"
           ],
+          "$comment": "Controlled values are spelled with underscores, not spaces: `data_arrays`, `selected_ions`. A reader encountering a value outside the controlled list treats it as `other`, so this is intentionally not a closed `enum`.",
           "description": "The facet of the thing being described in this file"
         },
         "column_mapping": {
           "type": "array",
-          "items": {"$ref": "#/definitions/column_mapping"},
+          "items": { "$ref": "#/definitions/column_mapping" },
           "description": "A list of Parquet column to controlled vocabulary term mappings"
         },
         "parameters": {
@@ -101,11 +111,7 @@
         "name": {
           "type": "string",
           "description": "The human-readable term name",
-          "examples": [
-            "ms level",
-            "filter string",
-            "selected ion m/z"
-          ]
+          "examples": ["ms level", "filter string", "selected ion m/z", "collision energy", "scan window lower limit"]
         },
         "path": {
           "type": "string",
@@ -113,7 +119,9 @@
           "pattern": "^(([A-Za-z0-9_]+)(?:\\.([A-Za-z0-9_]+))*)$",
           "examples": [
             "ms_level",
-            "isolation_window.isolation_window_target"
+            "isolation_window.target_mz",
+            "activation.collision_energy",
+            "scan_window.scan_window_lower_limit"
           ]
         },
         "accession": {

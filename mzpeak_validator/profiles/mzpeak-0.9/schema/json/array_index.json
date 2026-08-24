@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "mzPeak array index schema",
   "description": "Describe the JSON format of the mzPeak signal data array index that will be serialized in the file metadata",
-  "required": ["prefix"],
+  "required": ["prefix", "entries"],
   "type": "object",
   "properties": {
     "prefix": {
@@ -68,7 +68,7 @@
             },
             "data_type": {
               "type": "string",
-              "description": "The data type for this array, denoted using a CURIE from the PSI-MS controlled vocabulary for a child of MS:1000518|binary data type.",
+              "description": "The data type for this array, denoted using a CURIE from the PSI-MS controlled vocabulary for a child of MS:1000518|binary data type. JSON Schema checks CURIE syntax only; the MS:1000518 ancestry is verified by a CV-aware validator.",
               "examples": [
                 "MS:1000521",
                 "MS:1000522",
@@ -80,7 +80,7 @@
             },
             "array_type": {
               "type": "string",
-              "description": "The type of array this is, semantically, denoted using a CURIE from the PSI-MS controlled vocabulary for a child of MS:1000513|binary data array. If no existing array fits, use MS:1000786|non-standard array.",
+              "description": "The type of array this is, semantically, denoted using a CURIE from the PSI-MS controlled vocabulary for a child of MS:1000513|binary data array. If no existing array fits, use MS:1000786|non-standard array. JSON Schema checks CURIE syntax only; the MS:1000513 ancestry is verified by a CV-aware validator.",
               "examples": [
                 "MS:1000514",
                 "MS:1000515",
@@ -92,18 +92,17 @@
             },
             "unit": {
               "type": "string",
-              "description": "The unit describing the measurment, denoted using a CURIE from the PSI-MS controlled vocabulary or the unit ontology.",
+              "description": "The unit describing the measurement, denoted using a CURIE for a child of UO:0000000|unit in the Unit Ontology, or an equivalent PSI-MS unit term. JSON Schema checks CURIE syntax only; the ancestry is verified by a CV-aware validator.",
               "examples": ["MS:1000040", "MS:1000131", "UO:0000010"],
               "pattern": "\\S+:\\S+",
               "format": "curie"
             },
             "buffer_priority": {
-                "type": ["string", "null"],
+                "type": "string",
                 "description": "A flag to indicate this array is the representative instance of this array type. The primary array of its type SHOULD have a simplified name, otherwise the writer should make it as unique as possible without sacrificing readability.",
                 "enum": [
                     "primary",
-                    "secondary",
-                    null
+                    "secondary"
                 ]
             },
             "sorting_rank": {
