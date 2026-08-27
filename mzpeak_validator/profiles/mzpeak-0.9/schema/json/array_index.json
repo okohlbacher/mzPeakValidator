@@ -91,11 +91,10 @@
               "format": "curie"
             },
             "unit": {
-              "type": "string",
-              "description": "The unit describing the measurement, denoted using a CURIE for a child of UO:0000000|unit in the Unit Ontology, or an equivalent PSI-MS unit term. JSON Schema checks CURIE syntax only; the ancestry is verified by a CV-aware validator.",
+              "type": ["string", "null"],
+              "description": "The unit describing the measurement, denoted using a CURIE for a child of UO:0000000|unit in the Unit Ontology, or an equivalent PSI-MS unit term. JSON Schema checks CURIE syntax only; the ancestry is verified by a CV-aware validator. null is permitted for dimensionless or raw-hardware arrays (e.g. TOF bin counts).",
               "examples": ["MS:1000040", "MS:1000131", "UO:0000010"],
-              "pattern": "\\S+:\\S+",
-              "format": "curie"
+              "pattern": "\\S+:\\S+"
             },
             "buffer_priority": {
                 "type": ["string", "null"],

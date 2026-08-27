@@ -13,7 +13,6 @@
     "metadata": {
       "type": "object",
       "additionalProperties": true,
-      "required": ["version"],
       "properties": {
         "version": {
           "type": "string",
