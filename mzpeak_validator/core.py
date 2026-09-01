@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.11"
+CATALOG_VERSION = "1.12"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1776,6 +1776,68 @@ def p_column_order(ar, rule, rep, params):
             rep.add(rule, sev, f"{f}: facet '{top.name}' first column is '{top.type[0].name}', "
                     f"expected the key '{expected[top.name]}' first", {"file": f, "facet": top.name})
 
+def p_column_mapping(ar, rule, rep, params):
+    """Column-mapping integrity (spec 204af16, metadata-tables.md): for every files[].column_mapping[]
+    entry in mzpeak_index.json, (a) the dotted `path` must resolve to a column in that file's Parquet
+    schema (list/item tokens are omitted in paths, so list levels unwrap silently), and (b) a mapping
+    with `term_marker: true` marks a value-less CV term per row and MUST point at a boolean column and
+    SHOULD carry the term's `accession`. Footer/schema-only -> runs under --quick. Self-gates: files
+    without a column_mapping block (all current converters) are skipped."""
+    idx = ar.index
+    if not isinstance(idx, dict):
+        return
+    sev = rule.get("severity", "error")
+
+    def resolve(schema, dotted):
+        """Walk a '.'-delimited path through struct/list nesting; return arrow type or None."""
+        typ = None
+        for tok in dotted.split("."):
+            children = schema if typ is None else typ
+            while typ is not None and (pa.types.is_list(typ) or pa.types.is_large_list(typ)):
+                typ = typ.value_type; children = typ
+            try:
+                if typ is None:
+                    typ = children.field(tok).type
+                elif pa.types.is_struct(typ):
+                    typ = typ.field(tok).type
+                else:
+                    return None
+            except KeyError:
+                return None
+        while pa.types.is_list(typ) or pa.types.is_large_list(typ):
+            typ = typ.value_type
+        return typ
+
+    for entry in idx.get("files") or []:
+        if not isinstance(entry, dict): continue
+        fname, mappings = entry.get("name"), entry.get("column_mapping")
+        if not fname or not isinstance(mappings, list) or not ar.has_file(fname):
+            continue
+        try:
+            schema = ar.pf(fname).schema_arrow
+        except Exception:
+            continue        # unreadable/empty Parquet member: flagged by the structural rules, not here
+        for m in mappings:
+            if not isinstance(m, dict): continue
+            path = m.get("path")
+            if not path: continue  # required-ness is the index_schema_valid rule's job
+            typ = resolve(schema, path)
+            if typ is None:
+                rep.add(rule, "warning", f"{fname}: column_mapping '{m.get('name', path)}' points at "
+                        f"'{path}' but no such column exists in the Parquet schema",
+                        {"file": fname, "path": path})
+                continue
+            if m.get("term_marker") is True:
+                if not pa.types.is_boolean(typ):
+                    rep.add(rule, sev, f"{fname}: column_mapping '{m.get('name', path)}' declares "
+                            f"term_marker=true but '{path}' is {typ}, not boolean (a term marker "
+                            f"column holds true/false/null presence flags)",
+                            {"file": fname, "path": path})
+                if not m.get("accession"):
+                    rep.add(rule, "warning", f"{fname}: term_marker mapping '{m.get('name', path)}' has "
+                            f"no accession — a marker without its CV term identifies nothing",
+                            {"file": fname, "path": path})
+
 def p_column_not_all_null(ar, rule, rep, params):
     """A required column that exists must not be entirely null: at least one row must carry a
     non-null value.  Useful for flat-layout columns that the cv_mapping primitive cannot reach
@@ -1834,6 +1896,7 @@ PRIMITIVES = {
     "chunk_columns": p_chunk_columns, "chunk_bounds": p_chunk_bounds, "aux_arrays": p_aux_arrays,
     "zip_stored": p_zip_stored, "column_order": p_column_order,
     "column_not_all_null": p_column_not_all_null, "count_implies_rows": p_count_implies_rows,
+    "column_mapping": p_column_mapping,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",

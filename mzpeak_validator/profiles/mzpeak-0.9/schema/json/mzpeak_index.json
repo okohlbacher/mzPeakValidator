@@ -13,6 +13,7 @@
     "metadata": {
       "type": "object",
       "additionalProperties": true,
+      "$comment": "Deliberate deviations from the spec schema: (1) `version` is not in `required` — HUPO-PSI #17 is open and no current converter writes it (profile resolution warns instead); (2) the version pattern is anchored plain regex — the spec's ECMA named-group form `(?<major>...)` does not compile under Python `re`.",
       "properties": {
         "version": {
           "type": "string",
@@ -106,6 +107,7 @@
     "column_mapping": {
       "type": "object",
       "description": "A mapping from a Parquet column to a controlled vocabulary term",
+      "required": ["name", "path"],
       "properties": {
         "name": {
           "type": "string",
@@ -126,11 +128,17 @@
         "accession": {
           "type": ["string", "null"],
           "description": "The CURIE for the controlled vocabulary term, or null if no controlled vocabulary term is available. Null may be used to indicate that a column has a human readable name but does not map to a controlled vocabulary term",
+          "pattern": "\\S+:\\S+",
           "default": null
         },
         "unit": {
           "type": ["string", "null"],
           "default": null
+        },
+        "term_marker": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether this column is marks the presence/absence of a specific value-less controlled vocabulary term, true when the term is present in the row, false or null otherwise."
         }
       }
     }

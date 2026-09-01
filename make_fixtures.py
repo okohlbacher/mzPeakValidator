@@ -168,7 +168,7 @@ _CV_LIST = [   # CVs the fixtures use; versions match the profile's pinned snaps
     {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
     {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}]
 
-def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None):
+def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None, column_mapping=None):
     if os.path.isdir(d): shutil.rmtree(d)
     os.makedirs(d)
     pq.write_table(meta, f"{d}/spectra_metadata.parquet")
@@ -178,6 +178,7 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
         open(p, "wb").write(payload)
     files = [{"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
              {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"}]
+    if column_mapping is not None: files[0]["column_mapping"] = column_mapping
     metadata = {"version": "0.9.0",
                 "cv_list": _CV_LIST if cv_list is None else cv_list,
                 "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
@@ -241,6 +242,15 @@ def build_all(out_root):
     # (B) L1-faithful float widths now accepted by the relaxed column schema
     case("pass", "float32_mz", _meta(), _data(S, MZ, IN, mz_type=pa.float32()), "PASS")                 # 32-bit m/z (imzML)
     case("pass", "float64_intensity", _meta(), _data(S, MZ, IN, inten_type=pa.float64()), "PASS")       # 64-bit intensity
+
+    # column_mapping integrity (spec 204af16): term_marker=true MUST point at a boolean column;
+    # spectrum.MS_1000511_ms_level is uint8 -> error. A pass twin with a resolvable plain mapping.
+    case("fail", "term_marker_nonbool", _meta(), _data(S, MZ, IN), "FAIL", "column_mapping_valid",
+         column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
+                          "accession": "MS:1000511", "term_marker": True}])
+    case("pass", "column_mapping_ok", _meta(), _data(S, MZ, IN), "PASS",
+         column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
+                          "accession": "MS:1000511"}])
 
     # JSON-Schema validation: a footer metadata blob that isn't valid JSON -> error (json_schema primitive)
     case("fail", "bad_file_description_blob", _meta(extra_footer={"file_description": "{ not valid json"}),

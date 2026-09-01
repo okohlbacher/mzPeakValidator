@@ -2,11 +2,11 @@
  "profile_id": "mzpeak-0.9",
  "mzpeak_spec": {
   "version": "0.9",
-  "commit": "85442bd68ecc6a8b8a0e3562bd9b6c3219c96e2f",
+  "commit": "204af1698c4d855027afc1fb3c7a920a715de773",
   "url": "https://github.com/HUPO-PSI/mzPeak-specification",
   "note": "Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0."
  },
- "rule_primitive_catalog": "1.11",
+ "rule_primitive_catalog": "1.12",
  "extends": null,
  "severity_model": "hard-errors-nondemotable",
  "conformance_axes": [

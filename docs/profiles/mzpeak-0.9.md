@@ -4,9 +4,9 @@
 > `python docs/gen_profile_page.py mzpeak_validator/profiles/mzpeak-0.9 > docs/profiles/mzpeak-0.9.md`
 
 - **Profile id:** `mzpeak-0.9`
-- **mzPeak spec:** 0.9 (commit [`85442bd68ecc`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.11` (the cross-language contract the engine implements)
-- **Rules:** 85 across 9 files
+- **mzPeak spec:** 0.9 (commit [`204af1698c4d`](https://github.com/HUPO-PSI/mzPeak-specification))
+- **Rule-primitive catalog:** `1.12` (the cross-language contract the engine implements)
+- **Rules:** 86 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -245,6 +245,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `array_index_data_valid` | `json_schema` | error | none | spectra_data footer 'spectrum_array_index' conforms to schema/json/array_index.json; data_type must be MS:1000518 child, array_type must be MS:1000513 child; all entries must share one buffer_format (point layout is all-or-nothing). |
 | `array_index_peaks_valid` | `json_schema` | error | none | spectra_peaks footer 'spectrum_array_index' conforms to schema/json/array_index.json; same ancestry and uniformity checks as array_index_data_valid. |
 | `array_index_chromatograms_valid` | `json_schema` | error | none | chromatograms_data footer 'chromatogram_array_index' conforms to schema/json/array_index.json; same ancestry and uniformity checks. No-ops on archives without chromatograms_data. |
+| `column_mapping_valid` | `column_mapping` | error | none | files[].column_mapping[] entries are consistent with the Parquet schemas: paths resolve, and term_marker=true mappings point at boolean presence-flag columns with an accession (spec docs/layouts/metadata-tables.md, commit 204af16). |
 
 ### `perf.rules.json`
 
@@ -270,12 +271,13 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 
 ## Primitive catalog (param contracts)
 
-The 26 primitives used by this profile and the parameters each accepts:
+The 27 primitives used by this profile and the parameters each accepts:
 
 - **`aux_arrays`** — params: file, count_column (number_of_auxiliary_arrays), list_column (auxiliary_arrays). Per row: declared count == actual list length (null treated as 0). DATA_SCAN.
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
 - **`chunk_bounds`** — params: file, group (chunk.<entity>_index), start_column, end_column. For each group: start<=end per chunk, and consecutive chunks non-overlapping & ascending by start. DATA_SCAN.
 - **`chunk_columns`** — params: file, start_column (the chunk-start column whose presence flags the chunked sublayout), required ([companion columns that MUST then exist]). Schema-only; runs under --quick.
+- **`column_mapping`** — params: none. Iterates mzpeak_index.json files[].column_mapping[]: each `path` must resolve to a column in that file's Parquet schema (unresolved -> warning); a mapping with term_marker=true MUST point at a boolean column (rule severity) and SHOULD carry an accession (warning). Self-gates on files without a column_mapping block.
 - **`column_order`** — params: file, expected ({facet -> required first column}). The entity-index / FK key MUST be the first column of its facet. Cheap (reads the Parquet schema only).
 - **`column_predicate`** — params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.
 - **`columns_present`** — params: file (logical table name), require_layout (optional: 'packed'|'split' — skips if the archive uses the other layout), schema_key (optional: use a different column schema than params.file). The engine injects the matching schema/tables/<schema_key_or_file>.columns.json; the rule checks required top_level_columns (flat split-layout tables) and/or facets/columns (nested packed-layout tables) and that each column's logical type matches the schema. A column's `type` may be a single logical type or a LIST of accepted types (e.g. ['double','float','integer']); type mismatch -> error, recovery rederive.
