@@ -7,14 +7,16 @@
   "null_semantics": "Arrow nulls are LEGITIMATE (sparse/null-marking): m/z and number_of_data_points may be null. Rules treat nulls as OK (counts as 0; skipped in monotonic/finite). Only genuine NaN/inf VALUES are flagged (see mz_finite_data). Do not 'fix' a rule to reject nulls.",
   "how_to_amend": "Each rule instantiates a primitive in mzpeak_validator.py. Copy a rule and edit params to retarget a column/table; the engine reads only id/primitive/severity/recovery/params. 'about'/'doc' are ignored.",
   "primitives": {
-   "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error.",
+   "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error. Optional distinct_column (mutually exclusive with count_column): actual = number of DISTINCT non-null values \u2014 the per-file entity count of a data facet; gates on the column, skips under --quick.",
    "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
    "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
    "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
    "dtype_role": "params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].",
    "foreign_key": "params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).",
    "index_contiguous": "params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored).",
-   "grouped_count_equals": "params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows."
+   "grouped_count_equals": "params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows.",
+   "footer_count_implies_rows": "params: file + footer_keys[]. Footer-only (runs under --quick). For each PRESENT key: count>0 with 0 rows, or count==0 with rows>0 -> finding (no reader can use that state). Absent keys skip silently \u2014 writers legitimately omit these keys on some facets. Semantics-neutral: exact agreement is footer_count_equals_rows / footer_equals_points_in_file's job.",
+   "footer_equals_points_in_file": "params: file + footer_key (+ optional list_columns, default [chunk.intensity, chunk.mz_chunk_values]). Footer point counter must equal the points in THIS file: point layout -> num_rows (footer-only); chunk layout -> sum of list lengths over the first plain list column (data scan; skipped under --quick); numpress-only chunk facets -> info + skip. Absent key skips silently."
   }
  },
  "rules": [
@@ -501,6 +503,213 @@
     "count_file": "spectra_metadata",
     "count_column": "number_of_peaks",
     "data_file": "spectra_peaks"
+   }
+  },
+  {
+   "id": "spectra_data_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "spectra_data",
+    "footer_keys": [
+     "spectrum_count",
+     "spectrum_data_point_count"
+    ]
+   }
+  },
+  {
+   "id": "spectra_peaks_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "spectra_peaks",
+    "footer_keys": [
+     "spectrum_count",
+     "spectrum_data_point_count"
+    ]
+   }
+  },
+  {
+   "id": "chromatograms_data_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "chromatograms_data",
+    "footer_keys": [
+     "chromatogram_data_point_count"
+    ]
+   }
+  },
+  {
+   "id": "wavelength_scans_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "wavelength_spectra_metadata_scans",
+    "footer_keys": [
+     "wavelength_spectrum_count"
+    ]
+   }
+  },
+  {
+   "id": "chromatogram_count_agreement",
+   "primitive": "footer_count_equals_rows",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "chromatograms_metadata footer chromatogram_count equals the chromatogram count (non-null chromatogram.index in the packed layout, rows in the split/flat layout). The missing twin of spectrum_count_agreement; the public corpus is 201/201 consistent.",
+   "params": {
+    "file": "chromatograms_metadata",
+    "footer_key": "chromatogram_count",
+    "count_column": "chromatogram.index"
+   }
+  },
+  {
+   "id": "point_fk_data_chunk",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Chunk-layout data facet FK: every referenced entity index must exist in its metadata facet. Closes the gap where 182/201 public archives (chunk layout) had no FK on the data facets at all.",
+   "params": {
+    "file": "spectra_data",
+    "column": "chunk.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "point_fk_data_chunk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Chunk-layout data facet FK: every referenced entity index must exist in its metadata facet. Closes the gap where 182/201 public archives (chunk layout) had no FK on the data facets at all.",
+   "params": {
+    "file": "spectra_data",
+    "column": "chunk.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "point_fk_peaks_chunk",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Chunk-layout data facet FK: every referenced entity index must exist in its metadata facet. Closes the gap where 182/201 public archives (chunk layout) had no FK on the data facets at all.",
+   "params": {
+    "file": "spectra_peaks",
+    "column": "chunk.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "spectrum.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "point_fk_peaks_chunk_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Chunk-layout data facet FK: every referenced entity index must exist in its metadata facet. Closes the gap where 182/201 public archives (chunk layout) had no FK on the data facets at all.",
+   "params": {
+    "file": "spectra_peaks",
+    "column": "chunk.spectrum_index",
+    "ref_file": "spectra_metadata",
+    "ref_column": "index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "chrom_point_fk_data_point",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Chunk-layout data facet FK: every referenced entity index must exist in its metadata facet. Closes the gap where 182/201 public archives (chunk layout) had no FK on the data facets at all.",
+   "params": {
+    "file": "chromatograms_data",
+    "column": "point.chromatogram_index",
+    "ref_file": "chromatograms_metadata",
+    "ref_column": "chromatogram.index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "chrom_point_fk_data_point_split",
+   "primitive": "foreign_key",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Chunk-layout data facet FK: every referenced entity index must exist in its metadata facet. Closes the gap where 182/201 public archives (chunk layout) had no FK on the data facets at all.",
+   "params": {
+    "file": "chromatograms_data",
+    "column": "point.chromatogram_index",
+    "ref_file": "chromatograms_metadata",
+    "ref_column": "index",
+    "allow_null": true
+   }
+  },
+  {
+   "id": "spectra_data_distinct_count_chunk",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer spectrum_count equals the number of DISTINCT spectra with rows in THIS file. The reference writer stamps the run-wide ordinal, so a mixed profile/centroid run over-declares on spectra_data (PXD076001: 255,623 declared, 2,521 present). Warning until the converter adopts per-file stamping; not instantiated on spectra_peaks until the zero-peak-spectrum counting question is settled with the converter.",
+   "params": {
+    "file": "spectra_data",
+    "footer_key": "spectrum_count",
+    "distinct_column": "chunk.spectrum_index"
+   }
+  },
+  {
+   "id": "spectra_data_distinct_count_point",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer spectrum_count equals the number of DISTINCT spectra with rows in THIS file. The reference writer stamps the run-wide ordinal, so a mixed profile/centroid run over-declares on spectra_data (PXD076001: 255,623 declared, 2,521 present). Warning until the converter adopts per-file stamping; not instantiated on spectra_peaks until the zero-peak-spectrum counting question is settled with the converter.",
+   "params": {
+    "file": "spectra_data",
+    "footer_key": "spectrum_count",
+    "distinct_column": "point.spectrum_index"
+   }
+  },
+  {
+   "id": "spectra_data_points_in_file",
+   "primitive": "footer_equals_points_in_file",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer point counter equals the points stored in THIS file (point layout: rows; chunk layout: sum of list lengths). The reference writer stamps the sum over BOTH data facets, so spectra_data over-declares whenever spectra_peaks holds points. Warning until the converter adopts per-file stamping.",
+   "params": {
+    "file": "spectra_data",
+    "footer_key": "spectrum_data_point_count"
+   }
+  },
+  {
+   "id": "spectra_peaks_points_in_file",
+   "primitive": "footer_equals_points_in_file",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer point counter equals the points stored in THIS file (point layout: rows; chunk layout: sum of list lengths). The reference writer stamps the sum over BOTH data facets, so spectra_data over-declares whenever spectra_peaks holds points. Warning until the converter adopts per-file stamping.",
+   "params": {
+    "file": "spectra_peaks",
+    "footer_key": "spectrum_data_point_count"
+   }
+  },
+  {
+   "id": "chromatograms_data_points_in_file",
+   "primitive": "footer_equals_points_in_file",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer point counter equals the points stored in THIS file (point layout: rows; chunk layout: sum of list lengths). The reference writer stamps the sum over BOTH data facets, so spectra_data over-declares whenever spectra_peaks holds points. Warning until the converter adopts per-file stamping.",
+   "params": {
+    "file": "chromatograms_data",
+    "footer_key": "chromatogram_data_point_count"
    }
   }
  ]

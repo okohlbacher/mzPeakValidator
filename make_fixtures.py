@@ -80,7 +80,7 @@ def _chrom_meta_flat(n=3, dp=None):
     return pa.table({
         "index": pa.array(range(n), pa.uint64()),
         "number_of_data_points": pa.array(list(dp), pa.uint64()),
-    })
+    }).replace_schema_metadata({b"chromatogram_count": str(n).encode()})
 
 def _chrom_data(n=3, dangling=False):
     """Chunk-layout chromatograms_data. dangling=True appends a row with chromatogram_index=99."""
@@ -318,6 +318,34 @@ def build_all(out_root):
                  "FAIL", "chrom_precursor_source_fk_split",
                  chrom_meta=_chrom_meta_flat(), chrom_data=_chrom_data(), chrom_precursors=_chrom_precursors(dangling=True))
     cases.append("fail/split_chrom_precursor_fk")
+
+    # footer-count integrity (mzPeakConverter#1, catalog 1.13): the reference writer stamps
+    # run-wide counters on every facet, so an empty/partial data facet can over-declare.
+    def _restamp(tbl, **kv):
+        md = dict(tbl.schema.metadata or {})
+        md.update({k.encode(): str(v).encode() for k, v in kv.items()})
+        return tbl.replace_schema_metadata(md)
+    # R1: 0-row spectra_data declaring counts (repro-centroid class) -> warning, verdict PASS
+    case("pass", "empty_data_footer_declares", _meta(dp=(0, 0, 0), total=0),
+         _restamp(_data([], [], []), spectrum_count=3, spectrum_data_point_count=12), "PASS",
+         warn="spectra_data_footer_implies_rows")
+    # R1 converse: populated facet declaring 0 (wavelength-scans class, tested on spectra_data)
+    case("pass", "populated_data_footer_zero", _meta(),
+         _restamp(_data(S, MZ, IN), spectrum_count=0), "PASS",
+         warn="spectra_data_footer_implies_rows")
+    # R2: footer spectrum_count over-declares the distinct spectra in this file (PXD076001 class)
+    case("pass", "data_count_over_declared", _meta(),
+         _restamp(_data(S, MZ, IN), spectrum_count=5), "PASS",
+         warn="spectra_data_distinct_count_point")
+    # R3: chunk facet whose intensity lists sum to 12 but the footer declares 40 (sum-of-facets class)
+    case("pass", "data_point_sum_over_declared", _meta(),
+         _restamp(_chunk_data(), spectrum_data_point_count=40), "PASS",
+         warn="spectra_data_points_in_file")
+    # R4: chromatograms_metadata footer chromatogram_count disagrees with rows -> error
+    _write_split(os.path.join(out_root, "fail", "chrom_count_mismatch"), _split_meta_flat(), _split_scans(), _data(S, MZ, IN),
+                 "FAIL", "chromatogram_count_agreement",
+                 chrom_meta=_restamp(_chrom_meta_flat(), chromatogram_count=5), chrom_data=_chrom_data())
+    cases.append("fail/chrom_count_mismatch")
 
     # adversarial: an image member naming a path outside the archive must be treated as absent
     # (not read) — path containment (review C1). Warns image_member_present; never reads the host file.

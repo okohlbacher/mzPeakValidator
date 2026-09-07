@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.12"
+CATALOG_VERSION = "1.13"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1080,6 +1080,9 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     if not ar.has_file(f): return
     v = ar.footer(f, key)
     if v is None:
+        # distinct-mode targets data facets whose footer keys are spec-silent; writers may
+        # legitimately omit them there, so absence is not a finding (metadata facets keep the warning).
+        if params.get("distinct_column"): return
         rep.add(rule, "warning", f"{f}: footer key '{key}' absent"); return
     try:
         iv = int(v)
@@ -1088,8 +1091,17 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     # In the packed parallel-facet layout, table rows == the LONGEST facet (e.g. one row per
     # PASEF precursor), not the spectrum count. If count_column (a facet primary key) is given,
     # count its non-null entries; the spectrum count is one per populated spectrum facet row.
-    col = params.get("count_column")
-    if col and has(ar, f, col):
+    # distinct_column (mutually exclusive) instead counts DISTINCT non-null values — the per-file
+    # entity count of a data facet where the same index repeats across points/chunks.
+    col, dcol = params.get("count_column"), params.get("distinct_column")
+    if dcol and has(ar, f, dcol):
+        if params.get("_quick"):
+            return
+        uniq = set()
+        for (arr,) in ar.iter_batches(f, dcol):
+            uniq.update(x for x in pc.unique(arr).to_pylist() if x is not None)
+        actual, what = len(uniq), f"distinct {dcol}"
+    elif col and has(ar, f, col):
         # Under --quick we can't count non-nulls without reading data, and falling back to
         # num_rows would false-FAIL packed PASEF archives (rows >> spectra). Skip instead.
         if params.get("_quick"):
@@ -1097,11 +1109,77 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
         # Stream to count non-nulls; avoids loading the full column into RAM.
         nonnull = sum(len(arr) - arr.null_count for (arr,) in ar.iter_batches(f, col))
         actual, what = nonnull, f"non-null {col}"
+    elif dcol:
+        return                        # distinct-mode rule gates on its column; no num_rows fallback
     else:
         actual, what = ar.num_rows(f), "parquet rows"
     if iv != actual:
-        rep.add(rule, "error", f"{f}: footer {key}={iv} != {what}={actual}",
+        rep.add(rule, rule.get("severity", "error"), f"{f}: footer {key}={iv} != {what}={actual}",
                 {"file": f}, recovery="rederive")
+
+def p_footer_count_implies_rows(ar, rule, rep, params):
+    """Footer counters must not contradict the file's row presence (mzPeakConverter#1): the
+    reference writer stamps the RUN-WIDE spectrum/point counters on every facet, so a
+    centroid-only run declares hundreds of thousands of spectra on an empty spectra_data and a
+    footer-planned reader queries every one; the converse (rows > 0, count 0) hides a populated
+    facet. Semantics-neutral — it does not decide run-total vs per-file counting, only flags the
+    one state no reader can use. Footer-only -> runs under --quick. An ABSENT key is skipped
+    silently (writers legitimately omit these keys on some facets); a non-integer value -> error."""
+    f = params["file"]
+    if not ar.has_file(f): return
+    sev = rule.get("severity", "warning")
+    rows = ar.num_rows(f)
+    for key in params.get("footer_keys", []):
+        v = ar.footer(f, key)
+        if v is None: continue
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            rep.add(rule, "error", f"{f}: footer {key}={v!r} is not an integer", {"file": f}); continue
+        if iv > 0 and rows == 0:
+            rep.add(rule, sev, f"{f}: footer {key}={iv} but the file has 0 rows — a footer-planned "
+                    f"reader would plan {iv} reads against an empty table", {"file": f}, recovery="rederive")
+        elif rows > 0 and iv == 0:
+            rep.add(rule, sev, f"{f}: footer {key}=0 but the file has {rows} rows — a footer-planned "
+                    f"reader would treat this populated facet as empty", {"file": f}, recovery="rederive")
+
+def p_footer_equals_points_in_file(ar, rule, rep, params):
+    """Per-facet point-count integrity: the footer point counter equals the number of points IN
+    THIS FILE (the reference writer instead stamps the sum over both data facets). Point layout
+    (point.mz / point.intensity present): points == num_rows, footer-only. Chunk layout: sum of
+    list lengths over the first present list column (a data scan — skipped under --quick);
+    numpress-only byte columns are not derivable without decoding -> info + skip."""
+    f, key = params["file"], params["footer_key"]
+    if not ar.has_file(f): return
+    v = ar.footer(f, key)
+    if v is None: return              # same absence policy as footer_count_implies_rows
+    try:
+        iv = int(v)
+    except (TypeError, ValueError):
+        rep.add(rule, "error", f"{f}: footer {key}={v!r} is not an integer", {"file": f}); return
+    sev = rule.get("severity", "warning")
+    flds = ar.fields(f)
+    if "point.mz" in flds or "point.intensity" in flds:
+        actual, what = ar.num_rows(f), "point rows in this file"
+    else:
+        cands = [c for c in params.get("list_columns", ["chunk.intensity", "chunk.mz_chunk_values"])
+                 if flds.get(c, "").startswith(("list", "large_list"))]
+        if not cands:
+            if any(c.startswith("chunk.") for c in flds):
+                rep.add(rule, "info", f"{f}: footer {key} not checkable — chunk facet carries no "
+                        f"plain list column (numpress/encoded only)", {"file": f})
+            return
+        if params.get("_quick"):
+            return
+        col = cands[0]
+        actual = 0
+        for (arr,) in ar.iter_batches(f, col):
+            actual += pc.sum(pc.fill_null(pc.list_value_length(arr), 0)).as_py() or 0
+        what = f"sum of {col} lengths"
+    if iv != actual:
+        rep.add(rule, sev, f"{f}: footer {key}={iv} != {what}={actual} (the writer stamps the "
+                f"run-wide total on every facet; a reader planning from this footer mis-sizes "
+                f"its reads)", {"file": f}, recovery="rederive")
 
 def p_column_predicate(ar, rule, rep, params):
     f, col = params["file"], params["column"]
@@ -1897,6 +1975,8 @@ PRIMITIVES = {
     "zip_stored": p_zip_stored, "column_order": p_column_order,
     "column_not_all_null": p_column_not_all_null, "count_implies_rows": p_count_implies_rows,
     "column_mapping": p_column_mapping,
+    "footer_count_implies_rows": p_footer_count_implies_rows,
+    "footer_equals_points_in_file": p_footer_equals_points_in_file,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
@@ -1960,7 +2040,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
                 params["_schema_store"] = prof._json_schema_store
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
-            elif prim == "footer_count_equals_rows":
+            elif prim in ("footer_count_equals_rows", "footer_equals_points_in_file"):
                 params["_quick"] = quick
             elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
