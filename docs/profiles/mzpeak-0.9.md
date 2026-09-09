@@ -6,7 +6,7 @@
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`204af1698c4d`](https://github.com/HUPO-PSI/mzPeak-specification))
 - **Rule-primitive catalog:** `1.13` (the cross-language contract the engine implements)
-- **Rules:** 102 across 9 files
+- **Rules:** 104 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -198,6 +198,8 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 | `spectra_data_points_in_file` | `footer_equals_points_in_file` | warning | rederive | Footer point counter equals the points stored in THIS file (point layout: rows; chunk layout: sum of list lengths). The reference writer stamps the sum over BOTH data facets, so spectra_data over-declares whenever spectra_peaks holds points. Warning until the converter adopts per-file stamping. |
 | `spectra_peaks_points_in_file` | `footer_equals_points_in_file` | warning | rederive | Footer point counter equals the points stored in THIS file (point layout: rows; chunk layout: sum of list lengths). The reference writer stamps the sum over BOTH data facets, so spectra_data over-declares whenever spectra_peaks holds points. Warning until the converter adopts per-file stamping. |
 | `chromatograms_data_points_in_file` | `footer_equals_points_in_file` | warning | rederive | Footer point counter equals the points stored in THIS file (point layout: rows; chunk layout: sum of list lengths). The reference writer stamps the sum over BOTH data facets, so spectra_data over-declares whenever spectra_peaks holds points. Warning until the converter adopts per-file stamping. |
+| `spectra_peaks_distinct_count_chunk` | `footer_count_equals_rows` | warning | rederive | Footer spectrum_count on spectra_peaks equals the number of DISTINCT spectra with rows in THIS file. Definition settled with the converter (HANDOFF-footer-counts-converter-reply.md, 2026-09-07): a spectrum handed to the peaks writer with zero peaks is not an entry; the branch fix stamps the buffer's entry_count. Warning until the profile bump that follows the corpus rebuild promotes the footer-count rules to error. |
+| `spectra_peaks_distinct_count_point` | `footer_count_equals_rows` | warning | rederive | Footer spectrum_count on spectra_peaks equals the number of DISTINCT spectra with rows in THIS file. Definition settled with the converter (HANDOFF-footer-counts-converter-reply.md, 2026-09-07): a spectrum handed to the peaks writer with zero peaks is not an entry; the branch fix stamps the buffer's entry_count. Warning until the profile bump that follows the corpus rebuild promotes the footer-count rules to error. |
 
 ### `imaging.rules.json`
 

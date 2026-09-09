@@ -711,6 +711,30 @@
     "file": "chromatograms_data",
     "footer_key": "chromatogram_data_point_count"
    }
+  },
+  {
+   "id": "spectra_peaks_distinct_count_chunk",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer spectrum_count on spectra_peaks equals the number of DISTINCT spectra with rows in THIS file. Definition settled with the converter (HANDOFF-footer-counts-converter-reply.md, 2026-09-07): a spectrum handed to the peaks writer with zero peaks is not an entry; the branch fix stamps the buffer's entry_count. Warning until the profile bump that follows the corpus rebuild promotes the footer-count rules to error.",
+   "params": {
+    "file": "spectra_peaks",
+    "footer_key": "spectrum_count",
+    "distinct_column": "chunk.spectrum_index"
+   }
+  },
+  {
+   "id": "spectra_peaks_distinct_count_point",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer spectrum_count on spectra_peaks equals the number of DISTINCT spectra with rows in THIS file. Definition settled with the converter (HANDOFF-footer-counts-converter-reply.md, 2026-09-07): a spectrum handed to the peaks writer with zero peaks is not an entry; the branch fix stamps the buffer's entry_count. Warning until the profile bump that follows the corpus rebuild promotes the footer-count rules to error.",
+   "params": {
+    "file": "spectra_peaks",
+    "footer_key": "spectrum_count",
+    "distinct_column": "point.spectrum_index"
+   }
   }
  ]
 }
