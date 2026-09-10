@@ -7,7 +7,7 @@
   "null_semantics": "Arrow nulls are LEGITIMATE (sparse/null-marking): m/z and number_of_data_points may be null. Rules treat nulls as OK (counts as 0; skipped in monotonic/finite). Only genuine NaN/inf VALUES are flagged (see mz_finite_data). Do not 'fix' a rule to reject nulls.",
   "how_to_amend": "Each rule instantiates a primitive in mzpeak_validator.py. Copy a rule and edit params to retarget a column/table; the engine reads only id/primitive/severity/recovery/params. 'about'/'doc' are ignored.",
   "primitives": {
-   "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error. Optional distinct_column (mutually exclusive with count_column): actual = number of DISTINCT non-null values \u2014 the per-file entity count of a data facet; gates on the column, skips under --quick.",
+   "footer_count_equals_rows": "params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error. Optional distinct_column (mutually exclusive with count_column): actual = number of DISTINCT non-null values \u2014 the per-file entity count of a data facet; gates on the column, skips under --quick. Optional max_index_column (exclusive with count_column and distinct_column): actual = one past the largest non-null value, 0 when there is none \u2014 the index bound mzPeakConverter stamps on a data facet (issue #1, decision D1); gates on the column, skips under --quick, silent on an absent key.",
    "count_sum_equals_rows": "params: file, count_file, count_column, guard. If 'guard' column exists in file, asserts sum(count_file.count_column) == rows(file). Null counts treated as 0.",
    "column_predicate": "params: file, column, op (ge|gt|le|lt|finite), value (for the comparison ops), [severity]. 'finite' flags NaN/inf values (nulls OK); the comparison ops flag values failing the test. Reports count + first offending row/value.",
    "grouped_monotonic": "params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.",
@@ -510,7 +510,7 @@
    "primitive": "footer_count_implies_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. Before 0.11.2 the reference writer stamped the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declared the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "spectra_data",
     "footer_keys": [
@@ -524,7 +524,7 @@
    "primitive": "footer_count_implies_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. Before 0.11.2 the reference writer stamped the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declared the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "spectra_peaks",
     "footer_keys": [
@@ -538,7 +538,7 @@
    "primitive": "footer_count_implies_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. Before 0.11.2 the reference writer stamped the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declared the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "chromatograms_data",
     "footer_keys": [
@@ -551,11 +551,76 @@
    "primitive": "footer_count_implies_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer {keys} must be 0 when the facet has 0 rows and > 0 when it has rows. The reference writer stamps the run-wide counters on every facet (mzPeakConverter#1: a centroid-only run declares the full spectrum count on an empty spectra_data and a footer-planned reader issued 893,769 queries against it). Advisory until HUPO-PSI defines the footer keys.",
+   "doc": "Secondary facets carry no entity count (mzPeakConverter#1, decision D2), so writers omit {keys} here and an absent key is not a finding. A key that is present must not claim rows the file does not have, nor 0 on rows it has (a pre-0.11.2 writer declared 0 on a populated wavelength scans facet). Warning.",
    "params": {
     "file": "wavelength_spectra_metadata_scans",
     "footer_keys": [
      "wavelength_spectrum_count"
+    ]
+   }
+  },
+  {
+   "id": "spectra_scans_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Secondary facets carry no entity count (mzPeakConverter#1, decision D2), so writers omit {keys} here and an absent key is not a finding. A key that is present must not claim rows the file does not have: mzPeakConverter 0.11.5 and earlier stamped the run total on every secondary, so an MS1-only run's empty precursors facet declared every spectrum. Warning.",
+   "params": {
+    "file": "spectra_metadata_scans",
+    "footer_keys": [
+     "spectrum_count"
+    ]
+   }
+  },
+  {
+   "id": "spectra_precursors_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Secondary facets carry no entity count (mzPeakConverter#1, decision D2), so writers omit {keys} here and an absent key is not a finding. A key that is present must not claim rows the file does not have: mzPeakConverter 0.11.5 and earlier stamped the run total on every secondary, so an MS1-only run's empty precursors facet declared every spectrum. Warning.",
+   "params": {
+    "file": "spectra_metadata_precursors",
+    "footer_keys": [
+     "spectrum_count"
+    ]
+   }
+  },
+  {
+   "id": "spectra_selected_ions_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Secondary facets carry no entity count (mzPeakConverter#1, decision D2), so writers omit {keys} here and an absent key is not a finding. A key that is present must not claim rows the file does not have: mzPeakConverter 0.11.5 and earlier stamped the run total on every secondary, so an MS1-only run's empty precursors facet declared every spectrum. Warning.",
+   "params": {
+    "file": "spectra_metadata_selected_ions",
+    "footer_keys": [
+     "spectrum_count"
+    ]
+   }
+  },
+  {
+   "id": "chromatogram_precursors_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Secondary facets carry no entity count (mzPeakConverter#1, decision D2), so writers omit {keys} here and an absent key is not a finding. A key that is present must not claim rows the file does not have: mzPeakConverter 0.11.5 and earlier stamped the run total on every secondary, so an MS1-only run's empty precursors facet declared every spectrum. Warning.",
+   "params": {
+    "file": "chromatograms_metadata_precursors",
+    "footer_keys": [
+     "chromatogram_count"
+    ]
+   }
+  },
+  {
+   "id": "chromatogram_selected_ions_footer_implies_rows",
+   "primitive": "footer_count_implies_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Secondary facets carry no entity count (mzPeakConverter#1, decision D2), so writers omit {keys} here and an absent key is not a finding. A key that is present must not claim rows the file does not have: mzPeakConverter 0.11.5 and earlier stamped the run total on every secondary, so an MS1-only run's empty precursors facet declared every spectrum. Warning.",
+   "params": {
+    "file": "chromatograms_metadata_selected_ions",
+    "footer_keys": [
+     "chromatogram_count"
     ]
    }
   },
@@ -656,27 +721,27 @@
    }
   },
   {
-   "id": "spectra_data_distinct_count_chunk",
+   "id": "spectra_data_count_max_index_chunk",
    "primitive": "footer_count_equals_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer spectrum_count equals the number of DISTINCT spectra with rows in THIS file. The reference writer stamps the run-wide ordinal, so a mixed profile/centroid run over-declares on spectra_data (PXD076001: 255,623 declared, 2,521 present). Warning until the converter adopts per-file stamping; not instantiated on spectra_peaks until the zero-peak-spectrum counting question is settled with the converter.",
+   "doc": "Footer spectrum_count on spectra_data equals one past the largest spectrum_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "spectra_data",
     "footer_key": "spectrum_count",
-    "distinct_column": "chunk.spectrum_index"
+    "max_index_column": "chunk.spectrum_index"
    }
   },
   {
-   "id": "spectra_data_distinct_count_point",
+   "id": "spectra_data_count_max_index_point",
    "primitive": "footer_count_equals_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer spectrum_count equals the number of DISTINCT spectra with rows in THIS file. The reference writer stamps the run-wide ordinal, so a mixed profile/centroid run over-declares on spectra_data (PXD076001: 255,623 declared, 2,521 present). Warning until the converter adopts per-file stamping; not instantiated on spectra_peaks until the zero-peak-spectrum counting question is settled with the converter.",
+   "doc": "Footer spectrum_count on spectra_data equals one past the largest spectrum_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "spectra_data",
     "footer_key": "spectrum_count",
-    "distinct_column": "point.spectrum_index"
+    "max_index_column": "point.spectrum_index"
    }
   },
   {
@@ -713,27 +778,75 @@
    }
   },
   {
-   "id": "spectra_peaks_distinct_count_chunk",
+   "id": "spectra_peaks_count_max_index_chunk",
    "primitive": "footer_count_equals_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer spectrum_count on spectra_peaks equals the number of DISTINCT spectra with rows in THIS file. Definition settled with the converter (HANDOFF-footer-counts-converter-reply.md, 2026-09-07): a spectrum handed to the peaks writer with zero peaks is not an entry; the branch fix stamps the buffer's entry_count. Warning until the profile bump that follows the corpus rebuild promotes the footer-count rules to error.",
+   "doc": "Footer spectrum_count on spectra_peaks equals one past the largest spectrum_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "spectra_peaks",
     "footer_key": "spectrum_count",
-    "distinct_column": "chunk.spectrum_index"
+    "max_index_column": "chunk.spectrum_index"
    }
   },
   {
-   "id": "spectra_peaks_distinct_count_point",
+   "id": "spectra_peaks_count_max_index_point",
    "primitive": "footer_count_equals_rows",
    "severity": "warning",
    "recovery": "rederive",
-   "doc": "Footer spectrum_count on spectra_peaks equals the number of DISTINCT spectra with rows in THIS file. Definition settled with the converter (HANDOFF-footer-counts-converter-reply.md, 2026-09-07): a spectrum handed to the peaks writer with zero peaks is not an entry; the branch fix stamps the buffer's entry_count. Warning until the profile bump that follows the corpus rebuild promotes the footer-count rules to error.",
+   "doc": "Footer spectrum_count on spectra_peaks equals one past the largest spectrum_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
    "params": {
     "file": "spectra_peaks",
     "footer_key": "spectrum_count",
-    "distinct_column": "point.spectrum_index"
+    "max_index_column": "point.spectrum_index"
+   }
+  },
+  {
+   "id": "chromatograms_data_count_max_index_chunk",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer chromatogram_count on chromatograms_data equals one past the largest chromatogram_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "chromatograms_data",
+    "footer_key": "chromatogram_count",
+    "max_index_column": "chunk.chromatogram_index"
+   }
+  },
+  {
+   "id": "chromatograms_data_count_max_index_point",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer chromatogram_count on chromatograms_data equals one past the largest chromatogram_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "chromatograms_data",
+    "footer_key": "chromatogram_count",
+    "max_index_column": "point.chromatogram_index"
+   }
+  },
+  {
+   "id": "wavelength_spectra_data_count_max_index_chunk",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer wavelength_spectrum_count on wavelength_spectra_data equals one past the largest wavelength_spectrum_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "wavelength_spectra_data",
+    "footer_key": "wavelength_spectrum_count",
+    "max_index_column": "chunk.wavelength_spectrum_index"
+   }
+  },
+  {
+   "id": "wavelength_spectra_data_count_max_index_point",
+   "primitive": "footer_count_equals_rows",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Footer wavelength_spectrum_count on wavelength_spectra_data equals one past the largest wavelength_spectrum_index with a row in THIS file, 0 when the file has no rows (mzPeakConverter#1, decision D1): an index bound a reader can iterate to although the indices in a data facet are sparse. A zero-point entity does not raise it. 0.11.2\u20130.11.5 stamped the number of entities with rows instead, which is not a bound and warns here on mixed, sparse or rewritten facets (090701-LTQVelos-unittest-01 spectra_data: 43 declared, max index 84); 0.11.1 and earlier stamped the run total. Warning until HUPO-PSI defines the footer keys.",
+   "params": {
+    "file": "wavelength_spectra_data",
+    "footer_key": "wavelength_spectrum_count",
+    "max_index_column": "point.wavelength_spectrum_index"
    }
   }
  ]

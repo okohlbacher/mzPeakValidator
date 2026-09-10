@@ -196,9 +196,9 @@ def _image_entry(archive_path="images/image_0000.tiff", payload=TIFF_BYTES, sha2
 
 def build_all(out_root):
     cases = []
-    def case(group, name, meta, data, verdict, rule=None, warn=None, **kw):
+    def case(group, name, meta, data, verdict, rule=None, warn=None, quiet=None, **kw):
         d = os.path.join(out_root, group, name); _write(d, meta, data, **kw)
-        json.dump({"verdict": verdict, "rule": rule, "warn_rule": warn}, open(f"{d}/expected.json", "w"))
+        json.dump({"verdict": verdict, "rule": rule, "warn_rule": warn, "quiet_rule": quiet}, open(f"{d}/expected.json", "w"))
         cases.append(f"{group}/{name}")
 
     case("pass", "valid", _meta(), _data(S, MZ, IN), "PASS")
@@ -333,10 +333,20 @@ def build_all(out_root):
     case("pass", "populated_data_footer_zero", _meta(),
          _restamp(_data(S, MZ, IN), spectrum_count=0), "PASS",
          warn="spectra_data_footer_implies_rows")
-    # R2: footer spectrum_count over-declares the distinct spectra in this file (PXD076001 class)
+    # R2: footer spectrum_count over-declares the index bound of this file (max index 2 -> 3)
     case("pass", "data_count_over_declared", _meta(),
          _restamp(_data(S, MZ, IN), spectrum_count=5), "PASS",
-         warn="spectra_data_distinct_count_point")
+         warn="spectra_data_count_max_index_point")
+    # D1 (mzPeakConverter#1): sparse indices {0, 2}, spectrum 1 has no points. The count is the
+    # bound 3, which is quiet; the 2 spectra with rows (what mzPeakConverter 0.11.2-0.11.5 declared)
+    # stops a bounded reader before index 2 and warns.
+    SP = [0] * 4 + [2] * 4
+    case("pass", "data_count_sparse_bound", _meta(dp=(4, 0, 4), total=8),
+         _restamp(_data(SP, MZ[:8], IN[:8]), spectrum_count=3), "PASS",
+         quiet="spectra_data_count_max_index_point")
+    case("pass", "data_count_sparse_cardinality", _meta(dp=(4, 0, 4), total=8),
+         _restamp(_data(SP, MZ[:8], IN[:8]), spectrum_count=2), "PASS",
+         warn="spectra_data_count_max_index_point")
     # R3: chunk facet whose intensity lists sum to 12 but the footer declares 40 (sum-of-facets class)
     case("pass", "data_point_sum_over_declared", _meta(),
          _restamp(_chunk_data(), spectrum_data_point_count=40), "PASS",
@@ -346,6 +356,13 @@ def build_all(out_root):
                  "FAIL", "chromatogram_count_agreement",
                  chrom_meta=_restamp(_chrom_meta_flat(), chromatogram_count=5), chrom_data=_chrom_data())
     cases.append("fail/chrom_count_mismatch")
+    # D2 (mzPeakConverter#1): a secondary carries no entity count; an empty precursors facet that
+    # still claims every chromatogram (mzPeakConverter 0.11.5 and earlier) warns
+    _write_split(os.path.join(out_root, "pass", "secondary_count_on_empty_facet"), _split_meta_flat(), _split_scans(), _data(S, MZ, IN),
+                 "PASS", warn="chromatogram_precursors_footer_implies_rows",
+                 chrom_meta=_chrom_meta_flat(), chrom_data=_chrom_data(),
+                 chrom_precursors=_restamp(_chrom_precursors(n=0), chromatogram_count=3))
+    cases.append("pass/secondary_count_on_empty_facet")
 
     # adversarial: an image member naming a path outside the archive must be treated as absent
     # (not read) — path containment (review C1). Warns image_member_present; never reads the host file.

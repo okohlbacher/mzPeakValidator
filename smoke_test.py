@@ -49,9 +49,10 @@ def main():
             name = os.path.relpath(d, tmp)
             passed = (rep["verdict"] == exp["verdict"]
                       and (exp["verdict"] != "FAIL" or exp.get("rule") in err_rules(rep))
-                      and (not exp.get("warn_rule") or exp["warn_rule"] in warn_rules(rep)))
+                      and (not exp.get("warn_rule") or exp["warn_rule"] in warn_rules(rep))
+                      and (not exp.get("quiet_rule") or exp["quiet_rule"] not in warn_rules(rep) + err_rules(rep)))
             ok = ok and passed
-            want = exp.get("rule") or exp.get("warn_rule")
+            want = exp.get("rule") or exp.get("warn_rule") or (exp.get("quiet_rule") and f"no {exp['quiet_rule']}")
             extra = "" if passed else f"   <-- expected {exp['verdict']}/{want}, got {short(rep)} E{err_rules(rep)} W{warn_rules(rep)}"
             print(f"  [{'ok ' if passed else 'FAIL'}] {name:28} {short(rep)}{extra}")
     finally:
