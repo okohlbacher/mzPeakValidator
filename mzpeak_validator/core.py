@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.13"
+CATALOG_VERSION = "1.14"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1082,7 +1082,7 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     if v is None:
         # distinct-mode targets data facets whose footer keys are spec-silent; writers may
         # legitimately omit them there, so absence is not a finding (metadata facets keep the warning).
-        if params.get("distinct_column"): return
+        if params.get("distinct_column") or params.get("max_index_column"): return
         rep.add(rule, "warning", f"{f}: footer key '{key}' absent"); return
     try:
         iv = int(v)
@@ -1093,8 +1093,21 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
     # count its non-null entries; the spectrum count is one per populated spectrum facet row.
     # distinct_column (mutually exclusive) instead counts DISTINCT non-null values — the per-file
     # entity count of a data facet where the same index repeats across points/chunks.
+    # max_index_column (also exclusive) takes one past the largest non-null value, 0 when there is
+    # none: the index bound mzPeakConverter stamps on data facets (issue #1 D1), which a reader can
+    # iterate to although the indices in the file are sparse.
     col, dcol = params.get("count_column"), params.get("distinct_column")
-    if dcol and has(ar, f, dcol):
+    mcol = params.get("max_index_column")
+    if mcol and has(ar, f, mcol):
+        if params.get("_quick"):
+            return
+        top = None
+        for (arr,) in ar.iter_batches(f, mcol):
+            m = pc.max(arr).as_py()
+            if m is not None and (top is None or m > top):
+                top = m
+        actual, what = (0 if top is None else top + 1), f"max {mcol} + 1"
+    elif dcol and has(ar, f, dcol):
         if params.get("_quick"):
             return
         uniq = set()
@@ -1109,8 +1122,8 @@ def p_footer_count_equals_rows(ar, rule, rep, params):
         # Stream to count non-nulls; avoids loading the full column into RAM.
         nonnull = sum(len(arr) - arr.null_count for (arr,) in ar.iter_batches(f, col))
         actual, what = nonnull, f"non-null {col}"
-    elif dcol:
-        return                        # distinct-mode rule gates on its column; no num_rows fallback
+    elif dcol or mcol:
+        return                        # distinct/max-index rules gate on their column; no num_rows fallback
     else:
         actual, what = ar.num_rows(f), "parquet rows"
     if iv != actual:
