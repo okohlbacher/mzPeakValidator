@@ -7,7 +7,7 @@
   "how_to_amend": "Each rule names a bundled schema (schema/json/<id>.json, registered as a json-schema artifact in profile.json) and a source. To validate another blob, copy a rule and set the schema id + source. 'about'/'doc' are ignored by the engine.",
   "primitives": {
    "json_schema": "params: schema (bundled schema id) + a source: {index:true} (the whole mzpeak_index.json), {index_path:'a.b'} (a dotted sub-path of the index), or {file, footer_key} (a JSON blob from a Parquet footer KV pair). Validates with jsonschema Draft7; each violation -> error at its JSON path. Present-but-unparseable -> error; absent -> skipped.",
-   "column_mapping": "params: none. Iterates mzpeak_index.json files[].column_mapping[]: each `path` must resolve to a column in that file's Parquet schema (unresolved -> warning); a mapping with term_marker=true MUST point at a boolean column (rule severity) and SHOULD carry an accession (warning). Self-gates on files without a column_mapping block."
+   "column_mapping": "params: none. Iterates mzpeak_index.json files[].column_mapping[]: each `path` must resolve to a column in that file's Parquet schema (unresolved -> warning); a mapping with term_marker=true MUST point at a boolean column (presence flag of the term) or a string/large-string column whose values are CURIEs of a child of the mapping's accession (spec d0c16b3); any other type is an error (rule severity), and it SHOULD carry an accession (warning). Outside --quick, string marker values are read: a non-CURIE or a CURIE that is not an is_a descendant of the accession is an error, a CURIE absent from the loaded CVs a warning (unverifiable). Self-gates on files without a column_mapping block."
   }
  },
  "rules": [
@@ -191,7 +191,7 @@
    "primitive": "column_mapping",
    "severity": "error",
    "recovery": "none",
-   "doc": "files[].column_mapping[] entries are consistent with the Parquet schemas: paths resolve, and term_marker=true mappings point at boolean presence-flag columns with an accession (spec docs/layouts/metadata-tables.md, commit 204af16).",
+   "doc": "files[].column_mapping[] entries are consistent with the Parquet schemas: paths resolve, and term_marker=true mappings carry an accession and point at either a boolean presence-flag column or a string column of child-term CURIEs (spec docs/layouts/metadata-tables.md, commits 204af16 and d0c16b3).",
    "params": {}
   }
  ]
