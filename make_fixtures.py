@@ -243,14 +243,24 @@ def build_all(out_root):
     case("pass", "float32_mz", _meta(), _data(S, MZ, IN, mz_type=pa.float32()), "PASS")                 # 32-bit m/z (imzML)
     case("pass", "float64_intensity", _meta(), _data(S, MZ, IN, inten_type=pa.float64()), "PASS")       # 64-bit intensity
 
-    # column_mapping integrity (spec 204af16): term_marker=true MUST point at a boolean column;
-    # spectrum.MS_1000511_ms_level is uint8 -> error. A pass twin with a resolvable plain mapping.
+    # column_mapping integrity (spec 204af16/d0c16b3): term_marker=true MUST point at a boolean column
+    # or a string column of child-term CURIEs; spectrum.MS_1000511_ms_level is uint8 -> error. A pass
+    # twin with a resolvable plain mapping.
     case("fail", "term_marker_nonbool", _meta(), _data(S, MZ, IN), "FAIL", "column_mapping_valid",
          column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
                           "accession": "MS:1000511", "term_marker": True}])
     case("pass", "column_mapping_ok", _meta(), _data(S, MZ, IN), "PASS",
          column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
                           "accession": "MS:1000511"}])
+    # string term marker (spec d0c16b3): MS:1000127 is a child of MS:1000525 -> PASS; the same column
+    # mapped to MS:1000559 (spectrum type) holds a non-child CURIE -> FAIL.
+    case("pass", "term_marker_string_child", _meta(), _data(S, MZ, IN), "PASS",
+         quiet="column_mapping_valid",
+         column_mapping=[{"name": "spectrum representation", "path": "spectrum.MS_1000525_spectrum_representation",
+                          "accession": "MS:1000525", "term_marker": True}])
+    case("fail", "term_marker_string_nonchild", _meta(), _data(S, MZ, IN), "FAIL", "column_mapping_valid",
+         column_mapping=[{"name": "spectrum type", "path": "spectrum.MS_1000525_spectrum_representation",
+                          "accession": "MS:1000559", "term_marker": True}])
 
     # JSON-Schema validation: a footer metadata blob that isn't valid JSON -> error (json_schema primitive)
     case("fail", "bad_file_description_blob", _meta(extra_footer={"file_description": "{ not valid json"}),

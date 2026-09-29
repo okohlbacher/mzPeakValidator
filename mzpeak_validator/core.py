@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.14"
+CATALOG_VERSION = "1.15"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1867,13 +1867,61 @@ def p_column_order(ar, rule, rep, params):
             rep.add(rule, sev, f"{f}: facet '{top.name}' first column is '{top.type[0].name}', "
                     f"expected the key '{expected[top.name]}' first", {"file": f, "facet": top.name})
 
+CURIE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*:[A-Za-z0-9_]+$")
+
+def _mapping_values(ar, fname, path):
+    """Non-null distinct values of a dotted column_mapping path (struct fields via struct_field so the
+    parent's nulls apply, list levels flattened), dictionary-decoded."""
+    toks = path.split(".")
+    arr = ar.column(fname, toks[0])
+    for tok in toks[1:]:
+        while pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type):
+            arr = arr.flatten()
+        arr = pc.struct_field(arr, tok)
+    while pa.types.is_list(arr.type) or pa.types.is_large_list(arr.type):
+        arr = arr.flatten()
+    if pa.types.is_dictionary(arr.type):
+        arr = arr.dictionary_decode()
+    return pc.unique(arr.drop_null()).to_pylist()
+
+def _check_marker_curies(ar, rule, rep, params, fname, m, path, sev):
+    """String term-marker values MUST be CURIEs of a child of the mapping's accession (spec d0c16b3)."""
+    acc, label = m["accession"], m.get("name", path)
+    cv, isa = params.get("_cv") or {}, params.get("_cv_isa") or {}
+    known = lambda a: any(a in accs for accs in cv.values())
+    loc = {"file": fname, "path": path}
+    bad_shape, not_child, unknown = [], [], []
+    for v in _mapping_values(ar, fname, path):
+        if not CURIE.match(v):
+            bad_shape.append(v)
+        elif not known(acc) or not known(v):
+            unknown.append(v)
+        elif v == acc or not _is_descendant(isa, v, acc):
+            not_child.append(v)
+    if bad_shape:
+        rep.add(rule, sev, f"{fname}: term_marker column '{path}' ({label}) holds {len(bad_shape)} "
+                f"non-CURIE value(s), e.g. {bad_shape[0]!r} — a string term marker holds CURIEs of "
+                f"child terms of {acc}", loc)
+    if not_child:
+        rep.add(rule, sev, f"{fname}: term_marker column '{path}' ({label}) holds {len(not_child)} "
+                f"CURIE(s) that are not children of {acc}, e.g. {not_child[0]}", loc)
+    if unknown:
+        rep.add(rule, "warning", f"{fname}: term_marker column '{path}' ({label}): cannot verify "
+                f"{len(unknown)} value(s) as children of {acc} against the loaded CVs, "
+                f"e.g. {unknown[0]} (term absent from the pinned snapshot)", loc)
+
 def p_column_mapping(ar, rule, rep, params):
     """Column-mapping integrity (spec 204af16, metadata-tables.md): for every files[].column_mapping[]
     entry in mzpeak_index.json, (a) the dotted `path` must resolve to a column in that file's Parquet
     schema (list/item tokens are omitted in paths, so list levels unwrap silently), and (b) a mapping
-    with `term_marker: true` marks a value-less CV term per row and MUST point at a boolean column and
-    SHOULD carry the term's `accession`. Footer/schema-only -> runs under --quick. Self-gates: files
-    without a column_mapping block (all current converters) are skipped."""
+    with `term_marker: true` (spec d0c16b3) points at either a BOOLEAN column (presence/absence of the
+    value-less term itself, e.g. opt_calibration_spectrum MS:1000928) or a STRING/large-string column
+    whose non-null values are CURIEs of a CHILD of the mapping's accession (e.g. spectrum_representation
+    MS:1000525 -> MS:1000127/MS:1000128); any other type is an error, and the mapping SHOULD carry the
+    term's `accession`. The type checks are schema-only and run under --quick; the string VALUE check
+    (CURIE shape = error; not a descendant in the loaded CV = error; accession absent from the loaded
+    CVs = warning, unverifiable) reads the column and is skipped under --quick. Self-gates: files
+    without a column_mapping block are skipped."""
     idx = ar.index
     if not isinstance(idx, dict):
         return
@@ -1919,10 +1967,15 @@ def p_column_mapping(ar, rule, rep, params):
                         {"file": fname, "path": path})
                 continue
             if m.get("term_marker") is True:
-                if not pa.types.is_boolean(typ):
+                if pa.types.is_dictionary(typ):
+                    typ = typ.value_type
+                if pa.types.is_string(typ) or pa.types.is_large_string(typ):
+                    if not params.get("_quick") and m.get("accession"):
+                        _check_marker_curies(ar, rule, rep, params, fname, m, path, sev)
+                elif not pa.types.is_boolean(typ):
                     rep.add(rule, sev, f"{fname}: column_mapping '{m.get('name', path)}' declares "
-                            f"term_marker=true but '{path}' is {typ}, not boolean (a term marker "
-                            f"column holds true/false/null presence flags)",
+                            f"term_marker=true but '{path}' is {typ}, neither boolean (presence flag "
+                            f"of the term) nor string (CURIEs of its child terms)",
                             {"file": fname, "path": path})
                 if not m.get("accession"):
                     rep.add(rule, "warning", f"{fname}: term_marker mapping '{m.get('name', path)}' has "
@@ -2055,6 +2108,10 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim in ("footer_count_equals_rows", "footer_equals_points_in_file"):
                 params["_quick"] = quick
+            elif prim == "column_mapping":
+                params["_quick"] = quick
+                params["_cv"] = prof.cv
+                params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
