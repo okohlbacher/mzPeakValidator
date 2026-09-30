@@ -31,8 +31,9 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_foote
     scols = [pa.array(range(n), pa.uint64()), pa.array([0] * n, pa.uint8())]
     snames = ["source_index", "MS_1000795_no_combination"]
     if coords:                                            # promoted 1-based imaging coordinates on the scan facet
-        scols += [pa.array(range(1, n + 1), pa.int64()), pa.array([1] * n, pa.int64())]
-        snames += ["position_x", "position_y"]          # the imaging profile's names (spec #24)
+        xyz = (range(1, n + 1), [1] * n) if coords is True else coords   # or explicit (xs, ys[, zs])
+        for axis, vals in zip("xyz", xyz):
+            scols.append(pa.array(list(vals), pa.int64())); snames.append(f"position_{axis}")  # spec #24 names
     scan = pa.StructArray.from_arrays(scols, names=snames)
     kv = {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()}
     for k, v in (extra_footer or {}).items():            # extra footer KV blobs (e.g. file_description JSON)
@@ -168,7 +169,8 @@ _CV_LIST = [   # CVs the fixtures use; versions match the profile's pinned snaps
     {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
     {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}]
 
-def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None, column_mapping=None):
+def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None,
+           column_mapping=None, checksums=None):
     if os.path.isdir(d): shutil.rmtree(d)
     os.makedirs(d)
     pq.write_table(meta, f"{d}/spectra_metadata.parquet")
@@ -179,6 +181,9 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
     files = [{"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
              {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"}]
     if column_mapping is not None: files[0]["column_mapping"] = column_mapping
+    for fe in files:                                      # checksums: {member: declared digest, or None = the true SHA-512}
+        if fe["name"] in (checksums or {}):
+            fe["checksum"] = checksums[fe["name"]] or hashlib.sha512(open(f"{d}/{fe['name']}", "rb").read()).hexdigest()
     metadata = {"version": "0.9.0",
                 "cv_list": _CV_LIST if cv_list is None else cv_list,
                 "format": {"version": "0.9", "writer": {"name": "make_fixtures", "version": "0"}}}
@@ -186,6 +191,15 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
     if extra_metadata: metadata.update(extra_metadata)
     json.dump({"files": files + (extra_files or []), "metadata": metadata},
               open(f"{d}/mzpeak_index.json", "w"), indent=1)
+
+def _grid(nx=3, ny=1, pixel_unit="UO:0000017"):
+    """metadata.scan_settings_list with the one entry that describes the pixel grid (imaging profile,
+    Grid geometry); _meta(coords=True) positions span x 1..3, y 1."""
+    size = {"accession": "IMS:1000046", "name": "pixel size (x)", "value": 100.0}
+    if pixel_unit: size["unit"] = pixel_unit
+    return {"scan_settings_list": [{"id": "scansettings1", "parameters": [
+        {"accession": "IMS:1000042", "name": "max count of pixels x", "value": nx},
+        {"accession": "IMS:1000043", "name": "max count of pixels y", "value": ny}, size]}]}
 
 def _image_entry(archive_path="images/image_0000.tiff", payload=TIFF_BYTES, sha256=None,
                  size_bytes=None, media_type="image/tiff"):
@@ -249,9 +263,14 @@ def build_all(out_root):
     case("fail", "term_marker_nonbool", _meta(), _data(S, MZ, IN), "FAIL", "column_mapping_valid",
          column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
                           "accession": "MS:1000511", "term_marker": True}])
-    case("pass", "column_mapping_ok", _meta(), _data(S, MZ, IN), "PASS",
+    case("pass", "column_mapping_ok", _meta(), _data(S, MZ, IN), "PASS", quiet="cv_terms_exist",
          column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
                           "accession": "MS:1000511"}])
+    # a written accession the pinned MS snapshot lacks (the timsTOF grid_type MS:9999002, review
+    # 2026-09-30 A7) -> cv_terms_exist warning naming the CV and versions; verdict stays PASS
+    case("pass", "cv_term_not_in_snapshot", _meta(), _data(S, MZ, IN), "PASS", warn="cv_terms_exist",
+         column_mapping=[{"name": "ms level", "path": "spectrum.MS_1000511_ms_level",
+                          "accession": "MS:9999002"}])
     # string term marker (spec d0c16b3): MS:1000127 is a child of MS:1000525 -> PASS; the same column
     # mapped to MS:1000559 (spectrum type) holds a non-child CURIE -> FAIL.
     case("pass", "term_marker_string_child", _meta(), _data(S, MZ, IN), "PASS",
@@ -378,14 +397,21 @@ def build_all(out_root):
     # (not read) — path containment (review C1). Warns image_member_present; never reads the host file.
     img = {"is_imaging": True, "coordinate_base": 1, "images": [_image_entry(archive_path="../escape.tiff")]}
     case("pass", "image_path_escape", _meta(coords=True), _data(S, MZ, IN), "PASS",
-         warn="image_member_present", imaging=img)
+         warn="image_member_present", imaging=img, extra_metadata=_grid())
 
-    # an embedded optical image listed in files[] as other/other must NOT be Parquet-opened by
-    # index_files_present (regression: imaging archives false-failed on the .tif member).
+    # an embedded optical image listed in files[] (image/other, imaging profile) must NOT be
+    # Parquet-opened by index_files_present (regression: imaging archives false-failed on the .tif member).
+    IMG_FILE = {"name": "images/image_0000.tiff", "entity_type": "image", "data_kind": "other"}
     case("pass", "indexed_optical_image", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         quiet="image_files_entry",
          imaging={"is_imaging": True, "coordinate_base": 1, "images": [_image_entry()]},
-         members={"images/image_0000.tiff": TIFF_BYTES},
-         extra_files=[{"name": "images/image_0000.tiff", "entity_type": "other", "data_kind": "other"}])
+         members={"images/image_0000.tiff": TIFF_BYTES}, extra_files=[IMG_FILE], extra_metadata=_grid())
+    # imaging profile check 8 (spec PR #25): listed as data_kind 'proprietary' (review 2026-09-30 A3) -> warning
+    case("pass", "image_listed_proprietary", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         warn="image_files_entry",
+         imaging={"is_imaging": True, "coordinate_base": 1, "images": [_image_entry()]},
+         members={"images/image_0000.tiff": TIFF_BYTES}, extra_metadata=_grid(),
+         extra_files=[{**IMG_FILE, "data_kind": "proprietary"}])
     # general rule: an indexed non-Parquet member that is not a recognized '*.parquet' facet is an
     # opaque "Other" blob (here entity_type/data_kind "other") and is SKIPPED from the Parquet parse,
     # not opened. The archive validates clean; a declared digest (if any) is checked by the dedicated
@@ -397,15 +423,49 @@ def build_all(out_root):
     # imaging archive with an embedded optical TIFF — exercises the image-member primitives (warning-level)
     imeta, idata = _meta(coords=True), _data(S, MZ, IN)
     img = {"is_imaging": True, "coordinate_base": 1}
-    case("pass", "imaging_with_optical_image", imeta, idata, "PASS",
-         imaging={**img, "images": [_image_entry()]}, members={"images/image_0000.tiff": TIFF_BYTES})
+    # also the pass twin of the imaging-profile rules: marker, paired 1-based positions, one grid
+    # entry whose counts equal pixel_count, the image listed as image/other
+    case("pass", "imaging_with_optical_image", imeta, idata, "PASS", quiet="image_files_entry",
+         imaging={**img, "pixel_count": {"x": 3, "y": 1}, "images": [_image_entry()]},
+         members={"images/image_0000.tiff": TIFF_BYTES}, extra_files=[IMG_FILE], extra_metadata=_grid())
     case("pass", "imaging_missing_image", imeta, idata, "PASS", warn="image_member_present",
-         imaging={**img, "images": [_image_entry()]})                                                   # declared, not written
+         imaging={**img, "images": [_image_entry()]}, extra_metadata=_grid())                          # declared, not written
     case("pass", "imaging_image_hash_mismatch", imeta, idata, "PASS", warn="image_blob_hash",
-         imaging={**img, "images": [_image_entry(sha256="0" * 64)]}, members={"images/image_0000.tiff": TIFF_BYTES})
+         imaging={**img, "images": [_image_entry(sha256="0" * 64)]}, members={"images/image_0000.tiff": TIFF_BYTES},
+         extra_metadata=_grid())
     case("pass", "imaging_image_not_tiff", imeta, idata, "PASS", warn="image_tiff_magic",
          imaging={**img, "images": [_image_entry(payload=NOT_TIFF_BYTES)]},
-         members={"images/image_0000.tiff": NOT_TIFF_BYTES})                                            # bytes match hash; only magic trips
+         members={"images/image_0000.tiff": NOT_TIFF_BYTES}, extra_metadata=_grid())                   # bytes match hash; only magic trips
+
+    # imaging profile, spec PR #25 "What a validator checks" (review 2026-09-30: the validator checked none of these)
+    # 1: positions without the marker; coordinate_base other than 1
+    case("fail", "imaging_positions_unmarked", imeta, idata, "FAIL", "imaging_marker", extra_metadata=_grid())
+    case("fail", "imaging_coordinate_base_zero", imeta, idata, "FAIL", "imaging_marker",
+         imaging={**img, "coordinate_base": 0}, extra_metadata=_grid())
+    # 2: one axis set without the other; no scan on a pixel. 3: position_z counts from 1 too
+    case("fail", "imaging_position_half_set", _meta(coords=([1, 2, 3], [1, None, 1])), idata, "FAIL",
+         "imaging_positions_paired", imaging=img, extra_metadata=_grid())
+    case("fail", "imaging_no_positioned_scan", _meta(coords=([None] * 3, [None] * 3)), idata, "FAIL",
+         "imaging_positions_paired", imaging=img, extra_metadata=_grid())
+    case("fail", "imaging_position_z_zero", _meta(coords=([1, 2, 3], [1, 1, 1], [0, 1, 1])), idata, "FAIL",
+         "imaging_coordinates_1based", imaging=img, extra_metadata=_grid())
+    # 4: no grid entry, two grid entries, a count below 1; 5: a pixel size without / with a non-length
+    # unit; 7: pixel_count disagreeing with the scan settings
+    two = _grid()["scan_settings_list"]
+    for name, extra, im in [
+            ("imaging_grid_missing", None, img),
+            ("imaging_grid_twice", {"scan_settings_list": two + [{**two[0], "id": "scansettings2"}]}, img),
+            ("imaging_grid_count_zero", _grid(nx=0), img),
+            ("imaging_pixel_size_no_unit", _grid(pixel_unit=None), img),
+            ("imaging_pixel_size_not_length", _grid(pixel_unit="UO:0000010"), img),          # UO:0000010 = second
+            ("imaging_pixel_count_mismatch", _grid(), {**img, "pixel_count": {"x": 4, "y": 1}})]:
+        case("fail", name, imeta, idata, "FAIL", "imaging_grid_settings", imaging=im, extra_metadata=extra)
+
+    # Core Basic Integrity: files[].checksum is the member's SHA-512 (review 2026-09-30 A1: stale digests passed)
+    case("pass", "member_checksum_ok", _meta(), _data(S, MZ, IN), "PASS", quiet="member_checksum_sha512",
+         checksums={"spectra_metadata.parquet": None, "spectra_data.parquet": None})
+    case("fail", "member_checksum_mismatch", _meta(), _data(S, MZ, IN), "FAIL", "member_checksum_sha512",
+         checksums={"spectra_metadata.parquet": None, "spectra_data.parquet": "0" * 128})
 
     # Offline $ref regression: index with a valid file_description block (which contains $refs to
     # param.json) must PASS index_schema_valid — confirms the offline $ref registry works end-to-end.

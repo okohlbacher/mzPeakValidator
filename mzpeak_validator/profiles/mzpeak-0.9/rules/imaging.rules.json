@@ -2,20 +2,36 @@
   "about": {
     "file": "imaging.rules.json",
     "axis": "imaging",
-    "purpose": "Checks that apply only to MS-imaging archives: 1-based pixel coordinates, and integrity of any embedded optical images (TIFFs stored as ZIP members and described in metadata.imaging.images[]).",
-    "applies_to": "imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata column is position_x (or the older IMS_1000050_position_x). The coordinate rule self-gates on that; the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).",
-    "spec_basis": "imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8: 1-based coordinates preserved from imzML; optical images embedded verbatim as images/image_NNNN.tiff and registered in metadata.imaging.images[]. Per that spec, a missing/mismatched optical image is a WARNING (auxiliary; outside the spectral L1 contract).",
+    "purpose": "Checks that apply only to MS-imaging archives: the imaging marker, 1-based and paired pixel positions, the pixel grid in the scan settings, and integrity of any embedded optical images (members described in metadata.imaging.images[] and listed in files[]).",
+    "applies_to": "imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata / spectra_metadata_scans column is position_x (or the older IMS_1000050_position_x). The coordinate, position and grid rules self-gate on that; imaging_marker runs on every archive (positions without the marker are its finding); the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).",
+    "spec_basis": "The imaging profile of HUPO-PSI/mzPeak-specification PR #25 (docs/profiles/imaging.md at 4861c9d), 'What a validator checks' 1-5, 7 (pixel_count) and 8; earlier imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8. Image problems stay WARNINGs (the profile: a mismatch is a warning; images are outside the fidelity levels). Not yet checked: the integer type and column-mapping entries of the position columns (checks 2-3), the IMS cv_list commit pin (check 6) and mz_range (check 7).",
     "how_to_amend": "The image rules are data-driven via params: change 'list' to point at a different array in the index, or the field names (member/hash_field/size_field/media_type_field) to match a different metadata shape. To make image problems hard errors, change severity to 'error'. 'about'/'doc' are ignored by the engine.",
     "primitives": {
-      "imaging_coordinates": "no params. If imaging, requires position_x AND position_y columns (or the older IMS_1000050_position_x / IMS_1000051_position_y) (checked independently) and that their minimum value is >= 1 (1-based).",
+      "imaging_coordinates": "no params. If imaging, requires position_x AND position_y columns (or the older IMS_1000050_position_x / IMS_1000051_position_y) (checked independently) and that the minimum set value of position_x, position_y and, when present, position_z is >= 1 (1-based).",
+      "imaging_position_pairs": "no params. If imaging, streams position_x and position_y together: a row that sets exactly one of them -> finding (first row named); no row that sets both -> finding. DATA_SCAN.",
+      "imaging_marker": "no params. Runs on every archive: a table carrying position columns while metadata.imaging.is_imaging is not true -> finding; metadata.imaging.coordinate_base present and not 1 -> finding. Index + schema only.",
+      "imaging_grid": "no params. The engine injects the CV is_a graph. If imaging, reads metadata.scan_settings_list (else the spectra_metadata footer copy): the number of entries carrying both IMS:1000042 and IMS:1000043 must be exactly 1, and in that entry each value must be an integer >= 1; every IMS:1000044/45/46/47/53/54 parameter of any entry must carry a unit descending from UO:0000001 (length unit); metadata.imaging.pixel_count.x/.y, when present, must equal the two counts. Index-only.",
+      "image_index_entry": "params: list, member, entity_type, data_kind. Each declared image member present in the archive must be listed in mzpeak_index.json files[] with the given entity_type and data_kind; unlisted or listed differently -> finding. Absent members are member_exists' finding.",
       "member_exists": "params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.",
       "blob_hash": "params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.",
       "tiff_magic": "params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\\0 little-endian or MM\\0* big-endian)."
     }
   },
   "rules": [
+    {"id": "imaging_marker", "primitive": "imaging_marker", "severity": "error", "recovery": "rederive",
+     "doc": "Imaging profile check 1: an archive that carries pixel positions MUST set metadata.imaging.is_imaging to true, and coordinate_base, if present, is 1. The converse, a marker without position columns (review 2026-09-30 B9/B10), is imaging_coordinates_1based's finding. recovery=rederive: the marker follows from the position columns.",
+     "params": {}},
+
     {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none",
-     "doc": "Imaging archives carry both position_x and position_y, 1-based (min coordinate >= 1). The deliberate offset from the 0-based spectrum.index is intentional (coordinates are preserved verbatim from imzML). No params.",
+     "doc": "Imaging archives carry both position_x and position_y, and every set position_x/_y/_z is >= 1 (profile checks 2-3: positions are indices into the pixel grid counted from 1). The deliberate offset from the 0-based spectrum.index is intentional. No params.",
+     "params": {}},
+
+    {"id": "imaging_positions_paired", "primitive": "imaging_position_pairs", "severity": "error", "recovery": "none",
+     "doc": "Imaging profile check 2: in each scan row position_x and position_y are both set (the scan belongs to a pixel) or both null (it belongs to none, e.g. a calibration scan), and at least one scan belongs to a pixel. Review 2026-09-30 B12: an unchecked UInt32 narrowing nulls one axis only.",
+     "params": {}},
+
+    {"id": "imaging_grid_settings", "primitive": "imaging_grid", "severity": "error", "recovery": "none",
+     "doc": "Imaging profile checks 4, 5 and 7 (pixel_count): exactly one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; pixel size, max dimension and absolute position offset carry a unit of length; metadata.imaging.pixel_count equals the scan settings. Review 2026-09-30 B13: a second grid-bearing scanSettings could pass through.",
      "params": {}},
 
     {"id": "image_member_present", "primitive": "member_exists", "severity": "warning", "recovery": "none",
@@ -28,6 +44,10 @@
 
     {"id": "image_tiff_magic", "primitive": "tiff_magic", "severity": "warning", "recovery": "none",
      "doc": "An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type.",
-     "params": {"list": "metadata.imaging.images", "member": "archive_path", "media_type_field": "media_type", "media_type": "image/tiff"}}
+     "params": {"list": "metadata.imaging.images", "member": "archive_path", "media_type_field": "media_type", "media_type": "image/tiff"}},
+
+    {"id": "image_files_entry", "primitive": "image_index_entry", "severity": "warning", "recovery": "rederive",
+     "doc": "Imaging profile check 8: every image in metadata.imaging.images is listed in files[] with entity_type 'image' and data_kind 'other'. Review 2026-09-30 A3: the converter listed auto-discovered optical images as data_kind 'proprietary'. WARNING, as the profile says for image problems; the member's Core checksum is member_checksum_sha512's concern.",
+     "params": {"list": "metadata.imaging.images", "member": "archive_path", "entity_type": "image", "data_kind": "other"}}
   ]
 }
