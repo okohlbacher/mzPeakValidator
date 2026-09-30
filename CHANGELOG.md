@@ -2,6 +2,16 @@
 
 Releases before 0.9.22 are recorded in the git history and in the catalog list in CLAUDE.md.
 
+## Unreleased
+
+### Fixed
+- `imaging_coordinates` and imaging detection accept the pixel position columns under the names the imaging
+  profile gives them, `position_x` / `position_y` (HUPO-PSI/mzPeak-specification#24, merged 2026-09-30). The rule
+  looked only for the inflected `IMS_1000050_position_x`, so a conformant imaging archive — mzpeak-convert writes
+  the spec names from its next release — failed with "missing position_x and/or position_y column". The older
+  names (`IMS_1000050_position_x`, `opt_IMS_1000050_position_x`) are still accepted. The imaging fixtures now use
+  the spec names.
+
 ## 0.9.22 — 2026-09-26 (rule-primitive catalog 1.15)
 
 ### Fixed

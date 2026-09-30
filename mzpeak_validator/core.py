@@ -884,12 +884,17 @@ class Report:
 # ----------------------------------------------------------------------- primitives
 INFLECT = re.compile(r"^([A-Za-z]+)_(\d+)_")
 
+# Pixel position columns: the imaging profile's `position_x` / `position_y` (HUPO-PSI/mzPeak-specification#24),
+# and the older inflected `IMS_1000050_position_x` / `opt_IMS_1000050_position_x`, all end the same way.
+def _pos(k, axis):
+    return k.endswith(f"position_{axis}")
+
 def _imaging(ar):
     if _dict(_dict((ar.index or {}).get("metadata")).get("imaging")).get("is_imaging"):
         return True
     # Check both packed-layout (spectra_metadata) and split-layout (spectra_metadata_scans)
     for f in ("spectra_metadata", "spectra_metadata_scans"):
-        if ar.has_file(f) and any("IMS_1000050" in k for k in ar.fields(f)):
+        if ar.has_file(f) and any(_pos(k, "x") for k in ar.fields(f)):
             return True
     return False
 
@@ -1496,18 +1501,18 @@ def p_imaging_coordinates(ar, rule, rep, params):
     # split layout but fall back to spectra_metadata (handles Q7 residual: coords in either file).
     f = None
     for candidate in ("spectra_metadata_scans", "spectra_metadata"):
-        if ar.has_file(candidate) and any("IMS_1000050" in k for k in ar.fields(candidate)):
+        if ar.has_file(candidate) and any(_pos(k, "x") for k in ar.fields(candidate)):
             f = candidate; break
     if f is None:
         f = "spectra_metadata_scans" if _is_split_layout(ar) else "spectra_metadata"
     if not ar.has_file(f):
         rep.add(rule, sev, f"imaging archive: expected coordinate file '{f}' not found", {"file": f}); return
     fields = ar.fields(f)
-    has_x = any(k.endswith("IMS_1000050_position_x") for k in fields)
-    has_y = any(k.endswith("IMS_1000051_position_y") for k in fields)
+    has_x = any(_pos(k, "x") for k in fields)
+    has_y = any(_pos(k, "y") for k in fields)
     if not (has_x and has_y):
         rep.add(rule, sev, "imaging archive missing position_x and/or position_y column", {"file": f}); return
-    coord_cols = [k for k in fields if k.endswith(("IMS_1000050_position_x", "IMS_1000051_position_y"))]
+    coord_cols = [k for k in fields if _pos(k, "x") or _pos(k, "y")]
     # Stream each coordinate column and track the running minimum finite value.
     for path in coord_cols:
         col_min = None
