@@ -32,7 +32,7 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_foote
     snames = ["source_index", "MS_1000795_no_combination"]
     if coords:                                            # promoted 1-based imaging coordinates on the scan facet
         scols += [pa.array(range(1, n + 1), pa.int64()), pa.array([1] * n, pa.int64())]
-        snames += ["IMS_1000050_position_x", "IMS_1000051_position_y"]
+        snames += ["position_x", "position_y"]          # the imaging profile's names (spec #24)
     scan = pa.StructArray.from_arrays(scols, names=snames)
     kv = {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()}
     for k, v in (extra_footer or {}).items():            # extra footer KV blobs (e.g. file_description JSON)

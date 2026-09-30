@@ -1,5 +1,5 @@
 format-version: 1.4
-data-version: 0.1.0
+data-version: 0.2.0
 ontology: mzpeak
 default-namespace: mzpeak
 remark: Converter-owned provisional controlled vocabulary for mzPeakConverter. These terms cover the
@@ -38,3 +38,33 @@ id: MZP:1000005
 name: time-of-flight calibration identifier
 def: "Selects the per-spectrum polynomial-refinement row in the tof_calibration index block, so the exact vendor m/z reconstructs. Stored as a per-spectrum non-negative integer." []
 comment: Provisional spectrum/scan attribute.
+
+[Term]
+id: MZP:1000006
+name: isolation window inverse reduced ion mobility lower limit
+def: "Lower 1/K0 bound of the mobility range this isolation window occupies within its frame. A dia-PASEF frame carries several isolation windows over disjoint, generally ASYMMETRIC mobility ranges; without explicit bounds a reader can only guess the split from window midpoints, which on real data misassigns several percent of the mobility axis. Stored as a per-isolation-window value of type double, in V*s/cm^2." []
+comment: Provisional isolation-window attribute.
+
+[Term]
+id: MZP:1000007
+name: isolation window inverse reduced ion mobility upper limit
+def: "Upper 1/K0 bound of the mobility range this isolation window occupies within its frame. See MZP:1000006. Stored as a per-isolation-window value of type double, in V*s/cm^2." []
+comment: Provisional isolation-window attribute.
+
+[Term]
+id: MZP:1000008
+name: TDF frame digitizer temperature T1
+def: "The per-frame `Frames.T1` value of a Bruker timsTOF analysis.tdf: the digitizer temperature that enters the vendor's ModelType-1 TOF-to-m/z model as C1_eff = C1 * (1 + dC1 * (T1_calibration - T1_frame) / 1e6). Stored as a per-spectrum value of type double." []
+comment: Provisional spectrum/scan attribute; a vendor-model input, not a PSI quantity. Column suffix `_tdf_t1`.
+
+[Term]
+id: MZP:1000009
+name: TDF frame digitizer temperature T2
+def: "The per-frame `Frames.T2` value of a Bruker timsTOF analysis.tdf, the second temperature the vendor records beside T1. Stored as a per-spectrum value of type double." []
+comment: Provisional spectrum/scan attribute; a vendor-model input, not a PSI quantity. Column suffix `_tdf_t2`.
+
+[Term]
+id: MZP:1000010
+name: TDF frame m/z calibration identifier
+def: "The per-frame `Frames.MzCalibration` value of a Bruker timsTOF analysis.tdf: selects the `MzCalibration` row (carried verbatim in the archive's `vendor_mz_calibration` index block) whose coefficients apply to this frame. Stored as a per-spectrum non-negative integer." []
+comment: Provisional spectrum/scan attribute. Column suffix `_tdf_mz_calibration_id`.

@@ -29,7 +29,7 @@
 
     {"id": "cv_term_placement_imaging", "primitive": "cv_mapping", "severity": "warning", "recovery": "none",
      "doc": "Imaging-profile CV placement (cv_mapping/imaging_table_rules.json), gated on is_imaging: an imaging scan facet MUST carry promoted pixel coordinates IMS:1000050 (position x) AND IMS:1000051 (position y). The mzPeak analogue of the mzML MALDI object rules; complements imaging_coordinates_1based (which checks the coordinate VALUES once the columns exist).",
-     "fix": "Promote the pixel coordinates into the scan facet as scan.IMS_1000050_position_x and scan.IMS_1000051_position_y.",
+     "fix": "Promote the pixel coordinates into the scan facet as the scan columns position_x and position_y (imaging profile).",
      "params": {"mapping_file": "cv_mapping/imaging_table_rules.json", "require_imaging": true,
                 "path_map": {"/spectrum/scan_list/scans[]": {"file": "spectra_metadata", "facet": "scan"}}}}
   ]
