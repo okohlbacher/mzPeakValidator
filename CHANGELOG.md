@@ -2,6 +2,28 @@
 
 Releases before 0.9.22 are recorded in the git history and in the catalog list in CLAUDE.md.
 
+## Unreleased (rule-primitive catalog 1.16)
+
+### Added
+- **Member checksums (`member_checksum_sha512`, error).** Every `files[]` entry that declares a `checksum` has its
+  member's bytes rehashed with SHA-512 (streamed) and compared (conformance.md, Basic Integrity). The adversarial
+  review of 2026-09-30 found the converter's rewrite lane writing stale digests that the validator passed.
+  `--quick` rehashes members up to 32 MB only and reports how many larger ones it skipped.
+- **Imaging profile checks** (spec PR #25, "What a validator checks" 1–5, 7, 8): `imaging_marker` (position
+  columns without `metadata.imaging.is_imaging: true`, or a `coordinate_base` other than 1);
+  `imaging_positions_paired` (`position_x`/`position_y` both set or both null in every row, at least one positioned
+  scan); `imaging_coordinates_1based` now also requires `position_z >= 1`; `imaging_grid_settings` (exactly one
+  scan-settings entry with integer `IMS:1000042`/`IMS:1000043` >= 1, a length unit on pixel size, max dimension
+  and absolute position offset, `metadata.imaging.pixel_count` equal to the scan settings); `image_files_entry`
+  (warning: embedded images listed in `files[]` as `image`/`other`).
+- **Written CV terms exist (`cv_terms_exist`, warning).** Accessions and units in `mzpeak_index.json`, array-index
+  CURIEs in Parquet footers and, outside `--quick`, the values of string term-marker and `grid_type` columns are
+  checked against the pinned MS/UO/IMS/MZP snapshots; each missing or obsolete term is reported once with the CV,
+  the pinned and the declared version. On converter v0.16.0 output it flags the timsTOF `grid_type` values
+  `MS:9999001`/`MS:9999002` and the obsolete `MS:1000843` carried over from the imzML example files.
+- Imaging fixtures carry the pixel-grid scan settings the profile requires; 15 new fixtures and
+  `test_conformance_checks.py`.
+
 ## 0.9.23 — 2026-09-30 (rule-primitive catalog 1.15)
 
 ### Fixed

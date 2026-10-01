@@ -2,11 +2,12 @@
   "about": {
     "file": "container.rules.json",
     "axis": "container & Parquet-level layout (well-formed)",
-    "purpose": "Checks on the ZIP container and Parquet column layout that the spec mandates but that are below the table/metadata level: members stored uncompressed, and the entity-index / foreign-key column placed first in each facet.",
-    "applies_to": "the ZIP archive (zip_stored is skipped for directory archives) and spectra_metadata column order.",
+    "purpose": "Checks on the ZIP container and Parquet column layout that the spec mandates but that are below the table/metadata level: members stored uncompressed, each member's bytes matching its declared SHA-512 checksum, and the entity-index / foreign-key column placed first in each facet.",
+    "applies_to": "the ZIP archive (zip_stored is skipped for directory archives), every files[] member that declares a checksum (ZIP or directory), and spectra_metadata column order.",
     "how_to_amend": "column_order's expected facet->first-column map is in params.expected. 'about'/'doc' are documentation; the engine reads id/primitive/severity/recovery/params.",
     "primitives": {
       "zip_stored": "no params. mzPeak ZIP members MUST be stored uncompressed (compress_type STORED); a directory archive is skipped. Cheap.",
+      "member_checksum": "params: quick_max_bytes. For every mzpeak_index.json files[] entry with a non-null `checksum`, streams the member's bytes (ZIP headers excluded) through SHA-512 and compares the lowercase hex digest (case-insensitive) with the declared value; a mismatch -> finding at the rule's severity. Entries without a checksum, and members absent from the archive (index_files_present's finding), are skipped. Under --quick only members of at most quick_max_bytes are rehashed, and one info finding counts the larger ones left unverified; without --quick every member is rehashed.",
       "column_order": "params: file, expected ({facet -> required first column}). The entity-index / FK key MUST be the first column of its facet. Cheap (reads the Parquet schema only)."
     }
   },
@@ -14,6 +15,10 @@
     {"id": "members_stored", "primitive": "zip_stored", "severity": "error", "recovery": "none",
      "doc": "mzPeak ZIP members MUST be stored uncompressed (the format relies on stored members for direct/remote range access; the engine also refuses high-inflation archives as a zip-bomb guard). Directory archives are skipped.",
      "params": {}},
+
+    {"id": "member_checksum_sha512", "primitive": "member_checksum", "severity": "error", "recovery": "recompute",
+     "doc": "Core Basic Integrity (conformance.md): each member's SHA-512 matches the checksum its files[] entry declares. Review 2026-09-30 A1: the converter's mzPeak rewrite lane copied old digests onto re-encoded members and the validator passed it. recovery=recompute: the digest is re-derivable from the bytes, once the bytes are known to be the intended ones. --quick rehashes members up to 32 MB only (metadata facets and images); a full run rehashes all.",
+     "params": {"quick_max_bytes": 33554432}},
 
     {"id": "facet_key_column_first", "primitive": "column_order", "severity": "error", "recovery": "none",
      "doc": "The entity-index / foreign-key column MUST be the first column of its facet (spec MUST; promotes from advisory to error — 0 corpus violations confirmed).",

@@ -5,8 +5,8 @@
 
 - **Profile id:** `mzpeak-0.9`
 - **mzPeak spec:** 0.9 (commit [`204af1698c4d`](https://github.com/HUPO-PSI/mzPeak-specification))
-- **Rule-primitive catalog:** `1.15` (the cross-language contract the engine implements)
-- **Rules:** 113 across 9 files
+- **Rule-primitive catalog:** `1.16` (the cross-language contract the engine implements)
+- **Rules:** 119 across 9 files
 - **Note:** Keyed to the current spec (HUPO-PSI/mzPeak-specification; ref impl HUPO-PSI/mzPeak @ 29e59b24). Bundles the spec's JSON Schemas under schema/json/. Pre-1.0: the spec example still declares version 0.9.0.
 
 ## How validation works
@@ -45,7 +45,7 @@ Every rule also declares a **recovery class** — how a paired repair mode could
 | cv | MS | 4.1.257 | `cv/psi-ms.obo.gz` |
 | cv | IMS | 1.1.0 | `cv/imagingMS.obo` |
 | cv | UO | 2026-01-16 | `cv/uo.obo` |
-| cv | MZP | 0.1.0 | `cv/mzpeak.obo` |
+| cv | MZP | 0.2.0 | `cv/mzpeak.obo` |
 | json-schema | mzpeak_index |  | `schema/json/mzpeak_index.json` |
 | json-schema | cv_list |  | `schema/json/cv_list.json` |
 | json-schema | file_description |  | `schema/json/file_description.json` |
@@ -125,15 +125,16 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 
 ### `cv.rules.json`
 
-**Purpose.** Controlled-vocabulary discipline on inflected column names of the form ${CV}_${ACCESSION}_${name} (e.g. MS_1000511_ms_level): the CV code must be one the profile pins, and the accession should resolve inside that pinned OBO snapshot.
+**Purpose.** Controlled-vocabulary discipline on inflected column names of the form ${CV}_${ACCESSION}_${name} (e.g. MS_1000511_ms_level): the CV code must be one the profile pins, and the accession should resolve inside that pinned OBO snapshot. The same existence check for the CURIEs an archive writes as values (index params, column mappings, array indexes, term-marker and grid_type columns).
 
-**Applies to.** any table with inflected columns; rules below target the two metadata tables.
+**Applies to.** any table with inflected columns; rules below target the two metadata tables. cv_terms_exist applies to every archive.
 
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
 | `cv_inflection_spectra_metadata` | `cv_inflection` | error | none | Inflected columns in spectra_metadata (spectrum/scan/precursor/selected_ion facets) use a pinned CV code and a resolvable accession, INCLUDING unit accessions (_unit_${CV}_${ACC}). severity=error is the code-unknown case; an unresolved accession is downgraded to warning inside the primitive. |
 | `cv_inflection_chromatograms_metadata` | `cv_inflection` | error | none | Same check for chromatograms_metadata when present (the primitive no-ops if the file is absent, so this is harmless on archives without chromatograms). |
 | `cv_list_declared` | `cv_list_consistency` | error | none | metadata.cv_list declares every CV code the archive uses (spec MUST). Absent cv_list on a file that uses CV codes is an error. Version policy: a declared CV version that is NEWER than the profile's pinned snapshot -> warning (the validator is behind; update its bundled CVs); a same-or-older declared version is fine and does NOT warn. This validates the FILE's own declaration (vs cv_inflection, which checks resolvability against the profile's pinned CVs). |
+| `cv_terms_exist` | `cv_terms_exist` | warning | none | Written accessions exist in their vocabulary: cv_list pins each CV to a fixed release (conformance.md), so a CURIE should name a term of it. Review 2026-09-30 A7: the timsTOF grid_type values MS:9999001/MS:9999002 are invented, not PSI-MS terms, and the validator passed them. Warning, not error: readers ignore unrecognised CV terms (conformance.md), and the check runs against the profile's one pinned snapshot per CV, which stands in for the release the archive declares (a term added between the two releases passes; one obsoleted after the declared release warns). Term-marker and grid_type VALUES are read outside --quick only. |
 
 ### `numeric.rules.json`
 
@@ -212,28 +213,33 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 
 ### `imaging.rules.json`
 
-**Purpose.** Checks that apply only to MS-imaging archives: 1-based pixel coordinates, and integrity of any embedded optical images (TIFFs stored as ZIP members and described in metadata.imaging.images[]).
+**Purpose.** Checks that apply only to MS-imaging archives: the imaging marker, 1-based and paired pixel positions, the pixel grid in the scan settings, and integrity of any embedded optical images (members described in metadata.imaging.images[] and listed in files[]).
 
-**Applies to.** imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata column is position_x (or the older IMS_1000050_position_x). The coordinate rule self-gates on that; the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).
+**Applies to.** imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata / spectra_metadata_scans column is position_x (or the older IMS_1000050_position_x). The coordinate, position and grid rules self-gate on that; imaging_marker runs on every archive (positions without the marker are its finding); the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).
 
-**Spec basis.** imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8: 1-based coordinates preserved from imzML; optical images embedded verbatim as images/image_NNNN.tiff and registered in metadata.imaging.images[]. Per that spec, a missing/mismatched optical image is a WARNING (auxiliary; outside the spectral L1 contract).
+**Spec basis.** The imaging profile of HUPO-PSI/mzPeak-specification PR #25 (docs/profiles/imaging.md at 4861c9d), 'What a validator checks' 1-5, 7 (pixel_count) and 8; earlier imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8. Image problems stay WARNINGs (the profile: a mismatch is a warning; images are outside the fidelity levels). Not yet checked: the integer type and column-mapping entries of the position columns (checks 2-3), the IMS cv_list commit pin (check 6) and mz_range (check 7).
 
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
-| `imaging_coordinates_1based` | `imaging_coordinates` | error | none | Imaging archives carry both position_x and position_y, 1-based (min coordinate >= 1). The deliberate offset from the 0-based spectrum.index is intentional (coordinates are preserved verbatim from imzML). No params. |
+| `imaging_marker` | `imaging_marker` | error | rederive | Imaging profile check 1: an archive that carries pixel positions MUST set metadata.imaging.is_imaging to true, and coordinate_base, if present, is 1. The converse, a marker without position columns (review 2026-09-30 B9/B10), is imaging_coordinates_1based's finding. recovery=rederive: the marker follows from the position columns. |
+| `imaging_coordinates_1based` | `imaging_coordinates` | error | none | Imaging archives carry both position_x and position_y, and every set position_x/_y/_z is >= 1 (profile checks 2-3: positions are indices into the pixel grid counted from 1). The deliberate offset from the 0-based spectrum.index is intentional. No params. |
+| `imaging_positions_paired` | `imaging_position_pairs` | error | none | Imaging profile check 2: in each scan row position_x and position_y are both set (the scan belongs to a pixel) or both null (it belongs to none, e.g. a calibration scan), and at least one scan belongs to a pixel. Review 2026-09-30 B12: an unchecked UInt32 narrowing nulls one axis only. |
+| `imaging_grid_settings` | `imaging_grid` | error | none | Imaging profile checks 4, 5 and 7 (pixel_count): exactly one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; pixel size, max dimension and absolute position offset carry a unit of length; metadata.imaging.pixel_count equals the scan settings. Review 2026-09-30 B13: a second grid-bearing scanSettings could pass through. |
 | `image_member_present` | `member_exists` | warning | none | Every optical image declared in metadata.imaging.images[].archive_path is actually present in the archive. WARNING, not error: optical images are auxiliary. Amend 'list'/'member' if image bookkeeping moves elsewhere in the index. |
 | `image_blob_hash` | `blob_hash` | warning | recompute | A present image member's bytes match its declared sha256 and size_bytes. recovery=recompute: a stale digest is fixable without touching the image. Change 'algo' if a different hash is recorded; null/absent hash fields are skipped per entry. |
 | `image_tiff_magic` | `tiff_magic` | warning | none | An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type. |
+| `image_files_entry` | `image_index_entry` | warning | rederive | Imaging profile check 8: every image in metadata.imaging.images is listed in files[] with entity_type 'image' and data_kind 'other'. Review 2026-09-30 A3: the converter listed auto-discovered optical images as data_kind 'proprietary'. WARNING, as the profile says for image problems; the member's Core checksum is member_checksum_sha512's concern. |
 
 ### `container.rules.json`
 
-**Purpose.** Checks on the ZIP container and Parquet column layout that the spec mandates but that are below the table/metadata level: members stored uncompressed, and the entity-index / foreign-key column placed first in each facet.
+**Purpose.** Checks on the ZIP container and Parquet column layout that the spec mandates but that are below the table/metadata level: members stored uncompressed, each member's bytes matching its declared SHA-512 checksum, and the entity-index / foreign-key column placed first in each facet.
 
-**Applies to.** the ZIP archive (zip_stored is skipped for directory archives) and spectra_metadata column order.
+**Applies to.** the ZIP archive (zip_stored is skipped for directory archives), every files[] member that declares a checksum (ZIP or directory), and spectra_metadata column order.
 
 | Rule id | Primitive | Severity | Recovery | What it checks |
 |---|---|---|---|---|
 | `members_stored` | `zip_stored` | error | none | mzPeak ZIP members MUST be stored uncompressed (the format relies on stored members for direct/remote range access; the engine also refuses high-inflation archives as a zip-bomb guard). Directory archives are skipped. |
+| `member_checksum_sha512` | `member_checksum` | error | recompute | Core Basic Integrity (conformance.md): each member's SHA-512 matches the checksum its files[] entry declares. Review 2026-09-30 A1: the converter's mzPeak rewrite lane copied old digests onto re-encoded members and the validator passed it. recovery=recompute: the digest is re-derivable from the bytes, once the bytes are known to be the intended ones. --quick rehashes members up to 32 MB only (metadata facets and images); a full run rehashes all. |
 | `facet_key_column_first` | `column_order` | error | none | The entity-index / foreign-key column MUST be the first column of its facet (spec MUST; promotes from advisory to error — 0 corpus violations confirmed). |
 | `wavelength_facet_key_column_first` | `column_order` | error | none | wavelength_spectra_metadata: spectrum.index and scan.source_index MUST be the first columns of their facets (spec docs/schemas/wavelength-spectra.md). No-ops when the table is absent. |
 
@@ -298,7 +304,7 @@ Each `rules/*.rules.json` also has a top-level `about` block (purpose, gating, a
 
 ## Primitive catalog (param contracts)
 
-The 29 primitives used by this profile and the parameters each accepts:
+The 35 primitives used by this profile and the parameters each accepts:
 
 - **`aux_arrays`** — params: file, count_column (number_of_auxiliary_arrays), list_column (auxiliary_arrays). Per row: declared count == actual list length (null treated as 0). DATA_SCAN.
 - **`blob_hash`** — params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.
@@ -313,6 +319,7 @@ The 29 primitives used by this profile and the parameters each accepts:
 - **`cv_list_consistency`** — params: [files], [list]. The engine injects the profile's pinned CV versions. Gathers every CV code used in inflected columns (primary + unit accessions) across `files`; requires metadata.cv_list (at `list`) to declare each used code (spec: every referenced CV MUST be declared once in cv_list). Absent/empty cv_list, or a used-but-undeclared code -> error. Version policy: warn ONLY when a declared CV version is NEWER than the profile's pinned snapshot (the validator is behind -> update its bundled CVs); a same-or-older declared version does NOT warn (a plain version difference is not a problem).
 - **`cv_mapping`** — params: mapping_file (bundled CvMapping path), path_map (scope_path -> {file,facet}), [require_imaging]. The engine injects the parsed mapping (_mapping) and the OBO is_a graph (_cv_isa). For each CvMappingRule: MUST -> finding at this rule's severity, SHOULD -> warning, MAY -> skipped (Phase 1). A term is satisfied by an accession that equals it (use_term) or is its is_a descendant (allow_children); non-repeatable terms matched by >1 column are flagged. Unmapped scope_paths and absent files/facets are skipped.
 - **`cv_mapping_json`** — params: mapping_file (bundled CvMapping path). Same evaluation as cv_mapping but resolves scope_path/cv_element_path over the JSON index metadata (mzpeak_index.json `metadata`) instead of facet columns: a path walker follows key / key[] / key[field=value] segments to each scope INSTANCE, then gathers the accessions at the relative cv_element_path within it. A MUST is checked per scope instance; an absent scope (no instances) is vacuously conformant. No path_map (the spec paths are used directly).
+- **`cv_terms_exist`** — no params. The engine injects the pinned CV accessions, the obsolete ones and the pinned versions. Gathers CURIEs from: every accession/unit key in mzpeak_index.json (column mappings, metadata params, files[].parameters); every JSON blob in a listed Parquet file's footer (array-index data_type/array_type/unit/transform, and accession/unit); outside --quick also the values of term_marker columns of string type and of every grid_type leaf in a Parquet schema (chunked-layout grid encoding). Each distinct CURIE whose prefix is a bundled CV (MS, UO, IMS, MZP) but which the pinned snapshot lacks or marks obsolete -> one finding naming the CV, the pinned version, the archive's declared version when different, and where it is written. Other prefixes are skipped. Inflected column names are cv_inflection's concern.
 - **`data_kind_facet`** — params: data_kinds[], facets[], entity_types[]. For each index entry whose data_kind is in data_kinds AND entity_type is in entity_types, the Parquet must have a top-level column named in facets[]; otherwise error.
 - **`dtype_role`** — params: file, column, role (label for messages), allowed[] (logical types: double|float|int|uint|string|bool|...). Errors if the stored logical type is not in allowed[].
 - **`footer_count_equals_rows`** — params: file, footer_key, [count_column]. Compares the Parquet footer int to a count: total rows by default, or the NON-NULL entries of count_column when given (use the spectrum facet primary key, since the packed parallel-facet table has one row per longest facet -- e.g. per PASEF precursor -- not per spectrum). Absent footer -> warning; non-int -> error; mismatch -> error. Optional distinct_column (mutually exclusive with count_column): actual = number of DISTINCT non-null values — the per-file entity count of a data facet; gates on the column, skips under --quick. Optional max_index_column (exclusive with count_column and distinct_column): actual = one past the largest non-null value, 0 when there is none — the index bound mzPeakConverter stamps on a data facet (issue #1, decision D1); gates on the column, skips under --quick, silent on an absent key.
@@ -321,10 +328,15 @@ The 29 primitives used by this profile and the parameters each accepts:
 - **`foreign_key`** — params: file, column, ref_file, ref_column, [allow_null]. Every non-null child value must exist in the parent column; child nulls are flagged UNLESS allow_null=true (set it for a packed facet key that is legitimately null on other facets' rows).
 - **`grouped_count_equals`** — params: file, group, count_file, count_column, key_column, [guard]. Groups the signal table by 'group' and checks each group's row count equals the declared count_column value (in count_file, keyed by key_column). Null declared count = 0. Per-spectrum analog of count_sum_equals_rows.
 - **`grouped_monotonic`** — params: file, group, column, direction (nondecreasing). Within each group (stable argsort, so physical row order need not be contiguous) consecutive non-null values must not decrease. GATED on the declared order: enforced only when the column's array-index entry gives it a non-null sorting_rank; a column declared unsorted (sorting_rank null/absent) is skipped with an info finding (per schema/array_index.json). recovery reorder_pair = re-sort the axis carrying its parallel arrays.
-- **`imaging_coordinates`** — no params. If imaging, requires position_x AND position_y columns (or the older IMS_1000050_position_x / IMS_1000051_position_y) (checked independently) and that their minimum value is >= 1 (1-based).
+- **`image_index_entry`** — params: list, member, entity_type, data_kind. Each declared image member present in the archive must be listed in mzpeak_index.json files[] with the given entity_type and data_kind; unlisted or listed differently -> finding. Absent members are member_exists' finding.
+- **`imaging_coordinates`** — no params. If imaging, requires position_x AND position_y columns (or the older IMS_1000050_position_x / IMS_1000051_position_y) (checked independently) and that the minimum set value of position_x, position_y and, when present, position_z is >= 1 (1-based).
+- **`imaging_grid`** — no params. The engine injects the CV is_a graph. If imaging, reads metadata.scan_settings_list (else the spectra_metadata footer copy): the number of entries carrying both IMS:1000042 and IMS:1000043 must be exactly 1, and in that entry each value must be an integer >= 1; every IMS:1000044/45/46/47/53/54 parameter of any entry must carry a unit descending from UO:0000001 (length unit); metadata.imaging.pixel_count.x/.y, when present, must equal the two counts. Index-only.
+- **`imaging_marker`** — no params. Runs on every archive: a table carrying position columns while metadata.imaging.is_imaging is not true -> finding; metadata.imaging.coordinate_base present and not 1 -> finding. Index + schema only.
+- **`imaging_position_pairs`** — no params. If imaging, streams position_x and position_y together: a row that sets exactly one of them -> finding (first row named); no row that sets both -> finding. DATA_SCAN.
 - **`index_contiguous`** — params: file, column, [severity]. The NON-NULL values of the column must equal 0,1,2,...,k-1 (nulls from packed-facet padding are ignored).
 - **`index_files_present`** — no params. Walks mzpeak_index.json 'files[]'; errors if a listed member is missing. Every member must open as Parquet EXCEPT those declared as embedded optical images in metadata.imaging.images[] (matched by archive_path) — those are opaque blobs checked by the image primitives, not Parquet-parsed. Gating on the declared-image registry (not on data_kind/extension) keeps a mislabelled/corrupt member from dodging the parse check. Also reports a malformed 'files' list / entry.
 - **`json_schema`** — params: schema (bundled schema id) + a source: {index:true} (the whole mzpeak_index.json), {index_path:'a.b'} (a dotted sub-path of the index), or {file, footer_key} (a JSON blob from a Parquet footer KV pair). Validates with jsonschema Draft7; each violation -> error at its JSON path. Present-but-unparseable -> error; absent -> skipped.
+- **`member_checksum`** — params: quick_max_bytes. For every mzpeak_index.json files[] entry with a non-null `checksum`, streams the member's bytes (ZIP headers excluded) through SHA-512 and compares the lowercase hex digest (case-insensitive) with the declared value; a mismatch -> finding at the rule's severity. Entries without a checksum, and members absent from the archive (index_files_present's finding), are skipped. Under --quick only members of at most quick_max_bytes are rehashed, and one info finding counts the larger ones left unverified; without --quick every member is rehashed.
 - **`member_exists`** — params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.
 - **`parquet_row_group_health`** — params: [files], [facet], [min_bytes]. Footer-only (no column decode; runs under --quick). For each `files` entry that carries the `facet` top-level struct (default 'chunk'): if the Parquet file has exactly ONE row group whose uncompressed total_byte_size exceeds min_bytes (default 67108864 = 64 MB) -> warning. A multi-row-group file, a small single-group file, or a non-chunk (point/peaks) layout does NOT warn.
 - **`tiff_magic`** — params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\0 little-endian or MM\0* big-endian).

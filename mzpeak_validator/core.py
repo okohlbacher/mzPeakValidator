@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.15"
+CATALOG_VERSION = "1.16"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -482,6 +482,28 @@ class Archive:
         with open(full, "rb") as fh:
             return fh.read() if n is None else fh.read(n)
 
+    def member_size(self, name):
+        """Byte length of an archive-contained member (its data, excluding ZIP headers)."""
+        if self._is_remote:         return self._remote_members[name].file_size
+        if self._zip is not None:   return self._zip.getinfo(name).file_size
+        return self._contained(name).stat().st_size
+
+    def iter_member(self, name, block=8 << 20):
+        """Stream a member's bytes in blocks, so a multi-GB member is hashed without holding it in RAM."""
+        if not self.has_member(name):
+            raise ValueError(f"refusing to read member outside the archive: {name!r}")
+        if self._is_remote:
+            zi = self._remote_members[name]
+            fh = _RangeFile(self._remote_session, self._remote_url, self._remote_data_offset(name, zi), zi.file_size)
+        elif self._zip is not None:
+            fh = self._zip.open(name)
+        else:
+            fh = open(self._contained(name), "rb")
+        try:
+            yield from iter(lambda: fh.read(block), b"")
+        finally:
+            fh.close()
+
     def _local_data_offset(self, fn):
         """Byte offset where a STORED member's data begins in the raw ZIP file.
         Reads 30 bytes from the mmap to parse the local file header."""
@@ -813,6 +835,7 @@ class Profile:
 
     def _load_cv(self):
         cv, isa = {}, {}                          # isa: merged child_acc -> {parent_acc} for allow_children
+        self.cv_obsolete = set()                  # obsolete terms: absent from cv[] but reported as obsolete, not unknown
         for art in self.manifest.get("artifacts", []):
             if art.get("role") != "cv":
                 continue
@@ -822,7 +845,7 @@ class Profile:
             with opener(p, "rt", encoding="utf-8", errors="replace") as fh:
                 for line in fh:
                     if line.startswith("[Term]"):
-                        if cur and not obs: accs.add(cur)
+                        if cur: (self.cv_obsolete if obs else accs).add(cur)
                         cur, obs = None, False
                     elif line.startswith("id:"):
                         cur = line[3:].strip()
@@ -832,7 +855,7 @@ class Profile:
                             isa.setdefault(cur, set()).add(toks[0])
                     elif line.startswith("is_obsolete:") and "true" in line:
                         obs = True
-            if cur and not obs: accs.add(cur)
+            if cur: (self.cv_obsolete if obs else accs).add(cur)
             cv[art["id"]] = accs
         self.cv_isa = isa
         return cv
@@ -1494,17 +1517,18 @@ def p_data_kind_facet(ar, rule, rep, params):
                         f"columns {sorted(tops)} — none of the expected signal facets {sorted(need)}",
                         {"file": fe["name"]})
 
+def _positions_file(ar):
+    """The table carrying the pixel position columns — the scans file in split layout, else
+    spectra_metadata (handles Q7 residual: coords in either file); None when neither has one."""
+    for f in ("spectra_metadata_scans", "spectra_metadata"):
+        if ar.has_file(f) and any(_pos(k, "x") or _pos(k, "y") for k in ar.fields(f)):
+            return f
+    return None
+
 def p_imaging_coordinates(ar, rule, rep, params):
     if not _imaging(ar): return
     sev = rule.get("severity", "error")
-    # Find the file that actually carries the IMS coordinate columns — prefer the scans file in
-    # split layout but fall back to spectra_metadata (handles Q7 residual: coords in either file).
-    f = None
-    for candidate in ("spectra_metadata_scans", "spectra_metadata"):
-        if ar.has_file(candidate) and any(_pos(k, "x") for k in ar.fields(candidate)):
-            f = candidate; break
-    if f is None:
-        f = "spectra_metadata_scans" if _is_split_layout(ar) else "spectra_metadata"
+    f = _positions_file(ar) or ("spectra_metadata_scans" if _is_split_layout(ar) else "spectra_metadata")
     if not ar.has_file(f):
         rep.add(rule, sev, f"imaging archive: expected coordinate file '{f}' not found", {"file": f}); return
     fields = ar.fields(f)
@@ -1512,7 +1536,8 @@ def p_imaging_coordinates(ar, rule, rep, params):
     has_y = any(_pos(k, "y") for k in fields)
     if not (has_x and has_y):
         rep.add(rule, sev, "imaging archive missing position_x and/or position_y column", {"file": f}); return
-    coord_cols = [k for k in fields if _pos(k, "x") or _pos(k, "y")]
+    # every set position, position_z included (imaging profile check 3), counts from 1
+    coord_cols = [k for k in fields if _pos(k, "x") or _pos(k, "y") or _pos(k, "z")]
     # Stream each coordinate column and track the running minimum finite value.
     for path in coord_cols:
         col_min = None
@@ -1525,6 +1550,102 @@ def p_imaging_coordinates(ar, rule, rep, params):
         if col_min is not None and col_min < 1:
             rep.add(rule, sev, f"{f}.{path}: minimum coordinate {col_min:g} < 1 "
                     f"(imaging coordinates must be 1-based)", {"file": f, "column": path})
+
+def p_imaging_position_pairs(ar, rule, rep, params):
+    """Imaging profile check 2 (spec PR #25): in every scan row position_x and position_y are both
+    set (the scan belongs to a pixel) or both null (it belongs to none, e.g. a calibration scan), and
+    at least one row has both set. A missing column is imaging_coordinates' finding. DATA_SCAN."""
+    if not _imaging(ar): return
+    f = _positions_file(ar)
+    if f is None: return
+    fields = ar.fields(f)
+    xs, ys = [k for k in fields if _pos(k, "x")], [k for k in fields if _pos(k, "y")]
+    if not (xs and ys): return
+    sev = rule.get("severity", "error")
+    half = paired = offset = 0; first = None
+    for x, y in ar.iter_batches(f, xs[0], ys[0]):
+        xn = pc.is_null(x).to_numpy(zero_copy_only=False)
+        yn = pc.is_null(y).to_numpy(zero_copy_only=False)
+        odd = xn != yn
+        if first is None and odd.any():
+            first = offset + int(np.argmax(odd))
+        half += int(odd.sum()); paired += int((~xn & ~yn).sum()); offset += len(x)
+    if half:
+        rep.add(rule, sev, f"{f}: {half} row(s) set only one of {xs[0]} / {ys[0]}, first at row {first} — "
+                f"a scan's position is both set or both null", {"file": f, "row": first})
+    if not paired:
+        rep.add(rule, sev, f"{f}: no row sets both {xs[0]} and {ys[0]} ({offset} rows) — at least one "
+                f"scan of an imaging archive belongs to a pixel", {"file": f})
+
+def p_imaging_marker(ar, rule, rep, params):
+    """Imaging profile check 1 (spec PR #25): an archive carrying pixel positions MUST set
+    metadata.imaging.is_imaging to true, and coordinate_base, when present, is 1. The converse, a
+    marker without position columns (review 2026-09-30 B9/B10), is imaging_coordinates'. Index + schema only."""
+    im = _dig(ar.index or {}, "metadata.imaging")
+    im = im if isinstance(im, dict) else {}
+    sev = rule.get("severity", "error")
+    f = _positions_file(ar)
+    if f and im.get("is_imaging") is not True:
+        rep.add(rule, sev, f"{f} carries pixel position columns but metadata.imaging.is_imaging is "
+                f"{im.get('is_imaging')!r}, not true — an archive with positions MUST mark itself imaging", {"file": f})
+    cb = im.get("coordinate_base", 1)
+    if cb != 1 or isinstance(cb, bool):
+        rep.add(rule, sev, f"metadata.imaging.coordinate_base is {cb!r}; positions count from 1, so it is always 1")
+
+_IMS_PIXEL_COUNTS = ("IMS:1000042", "IMS:1000043")                   # max count of pixels x / y
+_IMS_LENGTHS = ("IMS:1000044", "IMS:1000045", "IMS:1000046",         # max dimension x/y, pixel size x/y,
+                "IMS:1000047", "IMS:1000053", "IMS:1000054")         # absolute position offset x/y
+
+def _scan_settings(ar):
+    """scan_settings_list from the index metadata, else the spectra_metadata footer copy."""
+    ssl = _dig(ar.index or {}, "metadata.scan_settings_list")
+    if ssl is None and ar.has_file("spectra_metadata"):
+        try:
+            ssl = json.loads(ar.footer("spectra_metadata", "scan_settings_list") or "null")
+        except ValueError:
+            ssl = None
+    return [s for s in ssl if isinstance(s, dict)] if isinstance(ssl, list) else []
+
+def p_imaging_grid(ar, rule, rep, params):
+    """Imaging profile checks 4, 5 and the pixel_count half of 7 (spec PR #25, Grid geometry): exactly
+    one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; every pixel
+    size, max dimension and absolute position offset in the scan settings carries a unit of length (a
+    UO:0000001 descendant); metadata.imaging.pixel_count, when present, equals those counts. Index-only."""
+    if not _imaging(ar): return
+    sev = rule.get("severity", "error")
+    isa = params.get("_cv_isa", {})
+    ssl = _scan_settings(ar)
+    grids = []
+    for s in ssl:
+        ps = {p.get("accession"): p for p in (s.get("parameters") or []) if isinstance(p, dict)}
+        if all(a in ps for a in _IMS_PIXEL_COUNTS):
+            grids.append((s.get("id"), ps))
+        for acc in (a for a in _IMS_LENGTHS if a in ps):
+            unit = ps[acc].get("unit")
+            if not (isinstance(unit, str) and _is_descendant(isa, unit, "UO:0000001")):
+                rep.add(rule, sev, f"scan settings '{s.get('id')}': {acc} ({ps[acc].get('name')}) carries "
+                        f"{'unit ' + repr(unit) if unit else 'no unit'} — it needs a unit of length "
+                        f"(UO:0000001 descendant, micrometre UO:0000017 recommended)")
+    if len(grids) != 1:
+        ids = f" ({', '.join(str(g[0]) for g in grids)})" if grids else ""
+        rep.add(rule, sev, f"{len(grids)} scan_settings_list entries carry both IMS:1000042 and IMS:1000043{ids} "
+                f"— exactly one entry describes the pixel grid")
+        return
+    sid, ps = grids[0]
+    counts = {}
+    for axis, acc in zip("xy", _IMS_PIXEL_COUNTS):
+        v = ps[acc].get("value")
+        integral = (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer())
+        if not integral or v < 1:
+            rep.add(rule, sev, f"scan settings '{sid}': {acc} ({ps[acc].get('name')}) is {v!r}, not an integer >= 1")
+        else:
+            counts[axis] = int(v)
+    block = _dig(ar.index or {}, "metadata.imaging.pixel_count")
+    if isinstance(block, dict):
+        for axis, n in counts.items():
+            if axis in block and block[axis] != n:
+                rep.add(rule, sev, f"metadata.imaging.pixel_count.{axis}={block[axis]!r} != {n} from scan settings "
+                        f"'{sid}' — where the block repeats a scan-settings value the two are equal")
 
 # --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
 TIFF_MAGIC = (b"II*\x00", b"MM\x00*")            # little/big-endian baseline TIFF (and BigTIFF shares II*/MM* prefixes)
@@ -1594,6 +1715,24 @@ def p_tiff_magic(ar, rule, rep, params):
         if head not in TIFF_MAGIC:
             rep.add(rule, sev, f"image member '{name}' declared {want_mt} but is not a TIFF "
                     f"(first 4 bytes {head!r}; expected b'II*\\x00' or b'MM\\x00*')", {"file": name})
+
+def p_image_index_entry(ar, rule, rep, params):
+    """Imaging profile check 8 (spec PR #25, Embedded images): every declared image member is listed
+    in files[] with entity_type `image` and data_kind `other` (review 2026-09-30 A3: the converter
+    wrote `proprietary`). A missing member or name is member_exists' finding."""
+    sev = rule.get("severity", "warning")
+    want = {k: params[k] for k in ("entity_type", "data_kind") if k in params}
+    listed = {fe.get("name"): fe for fe in (ar.index or {}).get("files") or [] if isinstance(fe, dict)}
+    for i, e, name in _image_entries(ar, params):
+        if not name or not ar.has_member(name):
+            continue
+        fe = listed.get(name)
+        if fe is None:
+            rep.add(rule, sev, f"image member '{name}' (images[{i}]) is not listed in files[]", {"file": name})
+            continue
+        got = {k: fe.get(k) for k in want if fe.get(k) != want[k]}
+        if got:
+            rep.add(rule, sev, f"image member '{name}' is listed with {got}, expected {want}", {"file": name})
 
 def _is_descendant(isa, acc, ancestor):
     """True iff `acc` equals `ancestor` or is a transitive is_a child of it (walks the merged is_a graph)."""
@@ -1859,6 +1998,34 @@ def p_zip_stored(ar, rule, rep, params):
         rep.add(rule, sev, f"{len(bad)} ZIP member(s) are compressed; mzPeak members MUST be stored "
                 f"(uncompressed): {bad[:5]}", {"file": bad[0]})
 
+def p_member_checksum(ar, rule, rep, params):
+    """Core Basic Integrity (conformance.md): each files[] entry's `checksum` is the lowercase SHA-512
+    hex digest of the member's bytes (ZIP headers excluded). Rehashes every member that declares one,
+    streamed; a mismatch is an error (review 2026-09-30 A1: the rewrite lane copied old digests onto
+    re-encoded members). An absent member is index_files_present's finding. Under --quick only members
+    up to `quick_max_bytes` are rehashed — the small metadata facets and images, which a rewrite most
+    often touches — and one info finding counts the larger ones left unverified."""
+    sev = rule.get("severity", "error")
+    cap = params.get("quick_max_bytes") if params.get("_quick") else None
+    skipped = 0
+    for fe in (ar.index or {}).get("files") or []:
+        if not isinstance(fe, dict): continue
+        name, declared = fe.get("name"), fe.get("checksum")
+        if not (declared and isinstance(name, str) and ar.has_member(name)):
+            continue
+        if cap is not None and ar.member_size(name) > cap:
+            skipped += 1; continue
+        h = hashlib.sha512()
+        for block in ar.iter_member(name):
+            h.update(block)
+        if h.hexdigest() != str(declared).lower():
+            rep.add(rule, sev, f"{name}: SHA-512 {h.hexdigest()[:16]}… != declared checksum "
+                    f"{str(declared)[:16]}… — the member changed after its index entry was written",
+                    {"file": name}, recovery="recompute")
+    if skipped:
+        rep.add(rule, "info", f"--quick: {skipped} member(s) larger than {_fmt_bytes(cap)} not rehashed; "
+                f"run without --quick to verify their checksums", recovery="none")
+
 def p_column_order(ar, rule, rep, params):
     """Container layout (Phase 6): the entity-index / foreign-key column MUST be the first column of its
     facet (params.expected maps facet -> required first column). Advisory by default."""
@@ -1888,6 +2055,27 @@ def _mapping_values(ar, fname, path):
     if pa.types.is_dictionary(arr.type):
         arr = arr.dictionary_decode()
     return pc.unique(arr.drop_null()).to_pylist()
+
+def _resolve_path(schema, dotted):
+    """Walk a column_mapping '.'-delimited path through struct/list nesting (list tokens are omitted
+    in paths); return the leaf's arrow type (list levels unwrapped) or None if it does not resolve."""
+    typ = None
+    for tok in dotted.split("."):
+        children = schema if typ is None else typ
+        while typ is not None and (pa.types.is_list(typ) or pa.types.is_large_list(typ)):
+            typ = typ.value_type; children = typ
+        try:
+            if typ is None:
+                typ = children.field(tok).type
+            elif pa.types.is_struct(typ):
+                typ = typ.field(tok).type
+            else:
+                return None
+        except KeyError:
+            return None
+    while pa.types.is_list(typ) or pa.types.is_large_list(typ):
+        typ = typ.value_type
+    return typ
 
 def _check_marker_curies(ar, rule, rep, params, fname, m, path, sev):
     """String term-marker values MUST be CURIEs of a child of the mapping's accession (spec d0c16b3)."""
@@ -1931,27 +2119,6 @@ def p_column_mapping(ar, rule, rep, params):
     if not isinstance(idx, dict):
         return
     sev = rule.get("severity", "error")
-
-    def resolve(schema, dotted):
-        """Walk a '.'-delimited path through struct/list nesting; return arrow type or None."""
-        typ = None
-        for tok in dotted.split("."):
-            children = schema if typ is None else typ
-            while typ is not None and (pa.types.is_list(typ) or pa.types.is_large_list(typ)):
-                typ = typ.value_type; children = typ
-            try:
-                if typ is None:
-                    typ = children.field(tok).type
-                elif pa.types.is_struct(typ):
-                    typ = typ.field(tok).type
-                else:
-                    return None
-            except KeyError:
-                return None
-        while pa.types.is_list(typ) or pa.types.is_large_list(typ):
-            typ = typ.value_type
-        return typ
-
     for entry in idx.get("files") or []:
         if not isinstance(entry, dict): continue
         fname, mappings = entry.get("name"), entry.get("column_mapping")
@@ -1965,7 +2132,7 @@ def p_column_mapping(ar, rule, rep, params):
             if not isinstance(m, dict): continue
             path = m.get("path")
             if not path: continue  # required-ness is the index_schema_valid rule's job
-            typ = resolve(schema, path)
+            typ = _resolve_path(schema, path)
             if typ is None:
                 rep.add(rule, "warning", f"{fname}: column_mapping '{m.get('name', path)}' points at "
                         f"'{path}' but no such column exists in the Parquet schema",
@@ -1986,6 +2153,98 @@ def p_column_mapping(ar, rule, rep, params):
                     rep.add(rule, "warning", f"{fname}: term_marker mapping '{m.get('name', path)}' has "
                             f"no accession — a marker without its CV term identifies nothing",
                             {"file": fname, "path": path})
+
+_CURIE_KEYS = ("accession", "unit", "data_type", "array_type", "transform")
+
+def _curie_refs(obj, where):
+    """(value, where) for every string under a key that holds a CURIE in mzPeak JSON — param and
+    column-mapping accession/unit, array-index data_type/array_type/unit/transform."""
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if k in _CURIE_KEYS and isinstance(v, str):
+                yield v, f"{where}.{k}"
+            else:
+                yield from _curie_refs(v, f"{where}.{k}")
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            yield from _curie_refs(v, f"{where}[{i}]")
+
+def _grid_type_paths(fields, prefix=""):
+    """Dotted paths of the `grid_type` leaves of grid-encoded groups (chunked-layout.md, Grid
+    encoding), e.g. chunk.mz_grid.grid_type; struct nesting only."""
+    for fld in fields:
+        if pa.types.is_struct(fld.type):
+            yield from _grid_type_paths(fld.type, f"{prefix}{fld.name}.")
+        elif fld.name == "grid_type" and prefix:
+            yield prefix + fld.name
+
+def _leaf_values(ar, fname, path):
+    """Distinct non-null values of a struct-only dotted leaf, read in batches projected to that leaf
+    (not the whole top-level struct — grid_type sits beside the signal lists in the chunk facet)."""
+    toks, vals = path.split("."), set()
+    for batch in ar.pf(fname).iter_batches(batch_size=BATCH_SIZE, columns=[path]):
+        arr = batch.column(toks[0])
+        for tok in toks[1:]:
+            arr = pc.struct_field(arr, tok)
+        vals.update(pc.unique(arr.drop_null()).to_pylist())
+    return vals
+
+def p_cv_terms_exist(ar, rule, rep, params):
+    """Written accessions exist in their vocabulary (review 2026-09-30 A7: the timsTOF grid_type values
+    MS:9999001/MS:9999002 are not PSI-MS terms). Gathers the CURIEs an archive writes where they are
+    cheap to read: accession/unit anywhere in mzpeak_index.json (column mappings, metadata params,
+    files[].parameters), the JSON blobs of every listed Parquet footer (array-index data_type/
+    array_type/unit/transform) and, outside --quick, the values of string term-marker columns and of
+    grid_type columns. Warns once per CURIE of a bundled CV (MS, UO, IMS, MZP) that the pinned snapshot
+    lacks or marks obsolete, naming the CV, the pinned version and the declared one. Inflected column
+    names are cv_inflection's; other CV prefixes are not checkable here and are skipped.
+    ponytail: one pinned snapshot per CV stands in for the declared release — a term added between the
+    declared and the pinned release passes, one obsoleted after the declared release warns."""
+    cv, obsolete, pinned = params.get("_cv") or {}, params.get("_cv_obsolete") or set(), params.get("_cv_versions") or {}
+    idx = ar.index if isinstance(ar.index, dict) else {}
+    cvl = _dig(idx, "metadata.cv_list")
+    declared = {e.get("id"): e.get("version") for e in (cvl if isinstance(cvl, list) else []) if isinstance(e, dict)}
+    refs = [r for k, v in idx.items() for r in _curie_refs(v, f"mzpeak_index.json:{k}")]
+    for fe in idx.get("files") or []:
+        name = fe.get("name") if isinstance(fe, dict) else None
+        if not (isinstance(name, str) and name.endswith(".parquet") and ar.has_member(name)):
+            continue
+        try:
+            pf = ar.pf(name)
+        except Exception:
+            continue        # unreadable/empty Parquet member: flagged by the structural rules, not here
+        for k, v in (pf.metadata.metadata or {}).items():
+            if k == b"ARROW:schema":
+                continue
+            try:
+                doc = json.loads(v)
+            except ValueError:
+                continue                          # a plain footer value, not a JSON blob
+            refs += _curie_refs(doc, f"{name}:{k.decode(errors='replace')}")
+        if params.get("_quick"):
+            continue
+        for m in fe.get("column_mapping") or []:
+            path = m.get("path") if isinstance(m, dict) and m.get("term_marker") is True else None
+            typ = _resolve_path(pf.schema_arrow, path) if isinstance(path, str) else None
+            if typ is not None and pa.types.is_dictionary(typ):
+                typ = typ.value_type
+            if typ is not None and (pa.types.is_string(typ) or pa.types.is_large_string(typ)):
+                refs += [(v, f"{name}:{path}") for v in _mapping_values(ar, name, path)]
+        for path in _grid_type_paths(pf.schema_arrow):
+            refs += [(v, f"{name}:{path}") for v in _leaf_values(ar, name, path)]
+    missing = {}                                  # CURIE -> [first place written, times written]
+    for v, where in refs:
+        if isinstance(v, str) and CURIE.match(v):
+            code = v.split(":", 1)[0]
+            if code in cv and v not in cv[code]:
+                missing.setdefault(v, [where, 0])[1] += 1
+    for v, (where, n) in sorted(missing.items()):
+        code = v.split(":", 1)[0]
+        state = "obsolete in" if v in obsolete else "not a term of"
+        decl = f" (the archive declares {code} {declared[code]})" if declared.get(code) not in (None, pinned.get(code)) else ""
+        more = f" and {n - 1} more place(s)" if n > 1 else ""
+        rep.add(rule, rule.get("severity", "warning"), f"{v} is {state} the pinned {code} {pinned.get(code)} "
+                f"snapshot{decl}; written at {where}{more}", {"path": where})
 
 def p_column_not_all_null(ar, rule, rep, params):
     """A required column that exists must not be entirely null: at least one row must carry a
@@ -2048,11 +2307,16 @@ PRIMITIVES = {
     "column_mapping": p_column_mapping,
     "footer_count_implies_rows": p_footer_count_implies_rows,
     "footer_equals_points_in_file": p_footer_equals_points_in_file,
+    "member_checksum": p_member_checksum, "cv_terms_exist": p_cv_terms_exist,
+    "imaging_marker": p_imaging_marker, "imaging_position_pairs": p_imaging_position_pairs,
+    "imaging_grid": p_imaging_grid, "image_index_entry": p_image_index_entry,
 }
-# blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap
+# blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap.
+# member_checksum and cv_terms_exist are not listed: they limit their own reads under --quick.
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
              "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates",
-             "chunk_bounds", "aux_arrays", "column_not_all_null", "count_implies_rows"}
+             "chunk_bounds", "aux_arrays", "column_not_all_null", "count_implies_rows",
+             "imaging_position_pairs"}
 
 # -------------------------------------------------------------------------------- profile cache
 @functools.lru_cache(maxsize=8)
@@ -2111,7 +2375,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
                 params["_schema_store"] = prof._json_schema_store
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
-            elif prim in ("footer_count_equals_rows", "footer_equals_points_in_file"):
+            elif prim in ("footer_count_equals_rows", "footer_equals_points_in_file", "member_checksum"):
                 params["_quick"] = quick
             elif prim == "column_mapping":
                 params["_quick"] = quick
@@ -2120,9 +2384,12 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
             elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
+            elif prim == "imaging_grid":
+                params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim == "cv_list_consistency":
-                params["_cv_versions"] = {a["id"]: a.get("version") for a in prof.manifest.get("artifacts", [])
-                                          if a.get("role") == "cv"}
+                params["_cv_versions"] = rep.cv_versions
+            elif prim == "cv_terms_exist":
+                params.update(_quick=quick, _cv=prof.cv, _cv_obsolete=prof.cv_obsolete, _cv_versions=rep.cv_versions)
             prepared.append((rule, fn, params))
 
         def _run_rule(rule, fn, params):
