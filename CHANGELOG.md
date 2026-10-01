@@ -2,7 +2,7 @@
 
 Releases before 0.9.22 are recorded in the git history and in the catalog list in CLAUDE.md.
 
-## Unreleased (rule-primitive catalog 1.18)
+## 0.9.24 — 2026-10-02 (rule-primitive catalog 1.18)
 
 ### Fixed (catalog 1.18)
 - **`cv_term_placement_imaging` no longer warns on imaging archives that name their position columns as the
