@@ -40,11 +40,23 @@ XML model), e.g. `/spectrum/scan_list/scans[]/parameters[]/accession`. mzPeak st
 CV accessions at a scope" = the accessions parsed out of the column names under that facet.
 
 Since catalog 1.18 that set also holds the accessions the facet's columns carry through **column mappings**:
-a `files[].column_mapping[]` entry of the table whose `path` starts with `<facet>.`, resolves to a column of
-the Parquet schema and names an `accession` (`scan.position_x` → `IMS:1000050`). The spec moved from
-inflected names to plain names with column mappings (the imaging profile's `position_x` / `position_y`), and
-a primitive that reads names alone reports every such term as missing. A mapping to an absent column, to a
-column of another facet, without an accession, or in another table's `files[]` entry adds nothing.
+a `files[].column_mapping[]` entry of the table whose `path` is `<facet>.<column>` — a direct child column of
+the facet that exists in the Parquet schema, the same columns the name route reads — and which names an
+`accession` (`scan.position_x` → `IMS:1000050`). The spec moved from inflected names to plain names with
+column mappings (the imaging profile's `position_x` / `position_y`), and a primitive that reads names alone
+reports every such term as missing. A mapping to an absent column, to a column of another facet, to a child
+of a nested list or struct inside the facet (a scope of its own in the CvMapping model), without an
+accession, or in another table's `files[]` entry adds nothing; a mapping's `unit` is not a term of the facet.
+
+**Term markers.** A mapping with `term_marker: true` is a per-row marker: a boolean column says on which rows
+its term holds, and several marker columns of sibling terms are how a per-row choice is written. The
+primitive reads no values, so it treats a marker as follows: its accession **satisfies a required term**
+(a marker that is false on every row still declares it, as an all-null inflected column does), but it is
+**not an entry** — it is left out of the cardinality count and out of XOR's "more than one". An inflected
+spectrum type next to a boolean `opt_calibration_spectrum` marker is therefore one spectrum type, not two.
+A string term marker contributes the accession it is mapped to, which is the parent of the CURIEs it holds;
+a rule that wants a child of that parent (spectrum type, `MS:1000559`) is not satisfied by it. Reading the
+values would settle all three cases and is not done: the primitive is schema + index only.
 
 The evaluator therefore needs a **path → facet map**. Phase-1 mapping (in the engine rule's `path_map`
 param, so it is data-driven, not code):

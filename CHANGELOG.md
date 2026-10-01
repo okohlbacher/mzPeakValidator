@@ -11,18 +11,28 @@ Releases before 0.9.22 are recorded in the git history and in the catalog list i
   which carry `IMS:1000050` / `IMS:1000051` through `column_mapping` entries in the `files[]` entry of their
   table, so every packed-layout imaging archive with those names got "requires all of [position x, position y];
   missing: position x, position y" — as did all 31 packed imaging fixtures, which have used those names since
-  0.9.23. A term now counts when a column of the facet carries it either way. A mapping counts only if its `path` lies inside the facet (`scan.…`) and resolves
-  to a column of the Parquet schema, and it names an accession; a mapping to an absent column, in another
-  facet, or in another table's `files[]` entry counts for nothing. The rule still warns on a packed imaging
-  archive whose scan facet has neither, and when both columns are mapped to the same term. The same applies to
-  `cv_term_placement_tables` (a spectrum type declared through a mapped term-marker column is now seen).
-  Catalog 1.18, because the behaviour of an existing primitive changed.
+  0.9.23. A term now counts when a column of the facet carries it either way. A mapping counts only if its
+  `path` names a column of the facet itself (`scan.position_x` — the columns the name route reads) that exists
+  in the Parquet schema, and it names an accession; a mapping to an absent column, to a child of a nested list
+  or struct (`scan.pix.position_x`), in another facet, or in another table's `files[]` entry counts for nothing,
+  and neither does a term that appears only as a mapping's `unit`. The rule still warns on a packed imaging
+  archive whose scan facet has neither, and when both columns are mapped to the same term. Catalog 1.18,
+  because the behaviour of an existing primitive changed.
+- **`cv_term_placement_tables` binds the same primitive and gains the same route.** A spectrum type declared
+  through a boolean term-marker column that names a child term (`term_marker: true`, accession `MS:1000294`)
+  is now seen. A term marker is a per-row flag, so it satisfies a required term but is not counted as an entry:
+  an inflected spectrum type next to a boolean marker of a sibling type (`opt_calibration_spectrum`,
+  `MS:1000928`) is not "matched by 2 entries", and the same holds for an inflected spectrum representation
+  next to boolean centroid / profile markers. The primitive reads schema and index only, so a marker that is
+  false on every row still counts as declaring its term, as an all-null inflected column does. Still not seen:
+  a string term marker mapped to the parent `MS:1000559` (the spec's own form, child CURIEs as values) — the
+  warning "missing: spectrum type" stays on such an archive.
 - **The split layout is left to the imaging rules.** `cv_term_placement_imaging` evaluates the scan facet of
   `spectra_metadata`; mzpeak-convert writes positions to `spectra_metadata_scans.parquet`, where the rule does
   not run. On that layout `imaging_coordinates_1based` (no position columns) and `imaging_position_columns` (no
   mapping, or a mapping naming another term) already report these cases as errors, so the rule would only
   repeat them as warnings. Its `doc` says so. No finding on real converter output changes.
-- 3 new fixtures (84 in total) and 51 new checks in `test_cv_mapping.py`.
+- 3 new fixtures (84 in total) and 74 new checks in `test_cv_mapping.py`.
 
 ### Added (catalog 1.17)
 - **The remaining imaging profile checks** (spec PR #25, "What a validator checks" 2, 3, 6 and 7; catalog 1.17).

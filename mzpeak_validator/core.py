@@ -1896,14 +1896,21 @@ def _term_matches(acc, term, isa):
 
 _CVMAP_LOGIC = {"AND": "all of", "OR": "one of", "XOR": "exactly one of"}
 
-def _cvmap_eval(cr, present, isa, rule, rep, emit, where, loc):
+def _cvmap_eval(cr, present, isa, rule, rep, emit, where, loc, markers=frozenset()):
     """Apply one CvMappingRule to the set of accessions `present` at scope `where`: combination logic
     (AND/OR/XOR) over its cv_terms, plus per-term cardinality (is_repeatable). Shared by the facet
-    resolver (p_cv_mapping) and the JSON-metadata resolver (p_cv_mapping_json)."""
+    resolver (p_cv_mapping) and the JSON-metadata resolver (p_cv_mapping_json).
+    `markers` are accessions the scope carries as per-row term markers (a column_mapping entry with
+    term_marker: true — the term holds on the rows the column says, and several marker columns of
+    sibling terms are how a per-row choice is written). A marker satisfies a required term, but it is
+    never a second entry: it is left out of the cardinality count and out of XOR's "more than one"."""
     terms = cr.get("cv_terms", [])
     logic = cr.get("cv_terms_combination_logic", "AND")
-    sat = {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in present)}
-    ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" else (len(sat) == 1)
+    hit = lambda accs: {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in accs)}
+    entries = hit(present)
+    sat = entries | hit(markers)
+    ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" \
+        else (len(sat) >= 1 and len(entries) <= 1)
     if not ok:
         want = ", ".join(f"{t.get('term_name')} ({t.get('term_accession')})" for t in terms)
         miss = ", ".join(terms[i].get("term_name") for i in range(len(terms)) if i not in sat) or "(combination unmet)"
@@ -1927,8 +1934,12 @@ def p_cv_mapping(ar, rule, rep, params):
     a term in one of two ways: inflected into its name (scan.IMS_1000050_position_x), or through a
     column_mapping entry in the files[] entry of the table (path scan.position_x, accession IMS:1000050
     — how the imaging profile's position_x / position_y carry theirs). A mapping counts only when its
-    path lies inside the facet and resolves to a column of the Parquet schema, so an entry that points
-    at an absent column declares nothing (column_mapping reports the dangling path).
+    path names a direct child column of the facet (<facet>.<column> — the columns the name route reads;
+    a nested structure is a scope of its own) that exists in the Parquet schema, so an entry that points
+    at an absent column declares nothing (column_mapping reports the dangling path). Only its
+    `accession` counts, compared as written; its `unit` is not a term of the facet.
+    A term_marker: true mapping is a per-row marker: its accession satisfies a required term (values
+    are not read, as for an inflected column), but it is not an entry for cardinality — see _cvmap_eval.
     Schema + index only (no row decode) -> runs under --quick. MUST emits at this rule's severity; SHOULD ->
     warning; MAY skipped (Phase 1). Self-gates on an unmapped scope_path or an absent file/facet."""
     mapping = params.get("_mapping")
@@ -1953,14 +1964,13 @@ def p_cv_mapping(ar, rule, rep, params):
             continue                              # facet absent in this archive -> skip
         present = {f"{code}:{num}" for path in fields if path.startswith(facet + ".")
                    for code, num in _cv_refs(path.split(".")[-1])}
-        schema = ar.pf(f).schema_arrow
+        markers = set()
         for m in _column_mappings(ar, f):         # terms declared by column mapping rather than by name
             path, acc = m.get("path"), m.get("accession")
-            if (isinstance(path, str) and isinstance(acc, str) and path.startswith(facet + ".")
-                    and _resolve_path(schema, path) is not None):
-                present.add(acc)
+            if isinstance(path, str) and isinstance(acc, str) and path in fields and path.startswith(facet + "."):
+                (markers if m.get("term_marker") is True else present).add(acc)
         emit = sev_must if cr.get("requirement_level") == "MUST" else "warning"
-        _cvmap_eval(cr, present, isa, rule, rep, emit, f"{f} [{facet}]", {"file": f, "facet": facet})
+        _cvmap_eval(cr, present, isa, rule, rep, emit, f"{f} [{facet}]", {"file": f, "facet": facet}, markers)
 
 def _json_seg(seg):
     """Parse one path segment: 'components[component_type=ionsource]' -> ('components', True, ('component_type','ionsource'));

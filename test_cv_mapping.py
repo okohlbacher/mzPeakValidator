@@ -10,6 +10,8 @@ Catalog 1.18: a column carries its term by inflected name OR through a column_ma
 files[] entry of its table (how the imaging profile's scan.position_x / scan.position_y carry
 IMS:1000050 / IMS:1000051). The second half of this file pins which mappings count, on the primitive
 and, through run() with the bundled profile, on cv_term_placement_imaging / cv_term_placement_tables.
+A term_marker: true mapping is a per-row marker: it satisfies a required term and is never a second
+entry (cardinality, XOR).
 
 Run: python test_cv_mapping.py   (exit 0 = pass).
 """
@@ -41,9 +43,13 @@ class _Rep:
 
 _UNSET = object()
 
-def cm(column, acc, facet="spectrum"):
-    """A column_mapping entry for `<facet>.<column>` naming the term `acc`."""
-    return {"name": column, "path": f"{facet}.{column}", "accession": acc}
+def cm(column, acc, facet="spectrum", **more):
+    """A column_mapping entry for `<facet>.<column>` naming the term `acc` (more: unit, term_marker)."""
+    return {"name": column, "path": f"{facet}.{column}", "accession": acc, **more}
+
+def marker(column, acc):
+    """A term-marker mapping: `<facet>.<column>` flags, row by row, whether the term `acc` holds."""
+    return cm(column, acc, term_marker=True)
 
 def _archive(d, spectrum_accs, imaging=False, plain=(), column_mapping=_UNSET, other_mapping=None):
     """Build a 1-row spectra_metadata with the given CV accessions inflected into the spectrum facet.
@@ -131,8 +137,11 @@ def main():
                  [A], must_az, False, plain=["z"], column_mapping=[cm("z", Z)]))
     r.append(run("mapped child satisfies allow_children",
                  [], mapping("r", "AND", [A_child]), False, plain=["b"], column_mapping=[cm("b", B)]))
-    r.append(run("mapped: a list<struct> child, list tokens omitted in the path (spectrum.windows.lower)",
-                 [], must_a, False, column_mapping=[cm("windows.lower", A)]))
+    r.append(run("a mapping to a nested child (spectrum.windows.lower) does not count: only columns of the facet do",
+                 [], must_a, True, column_mapping=[cm("windows.lower", A)]))
+    r.append(run("... nor does the bare facet or a path with a trailing dot",
+                 [], must_a, True, plain=["a"], column_mapping=[{"name": "s", "path": "spectrum", "accession": A},
+                                                               {"name": "a", "path": "spectrum.a.", "accession": A}]))
     r.append(run("inflected names alone still count (a column_mapping block without the term)",
                  [A], must_a, False, plain=["q"], column_mapping=[cm("q", Q)]))
     r.append(run("no inflected name and no mapping -> violated",
@@ -148,6 +157,12 @@ def main():
     r.append(run("a mapping without an accession (null / absent) does not count",
                  [], must_a, True, plain=["a", "b"],
                  column_mapping=[{"name": "a", "path": "spectrum.a", "accession": None}, {"name": "b", "path": "spectrum.b"}]))
+    r.append(run("only the accession counts: the required term as the mapping's unit does not",
+                 [], must_a, True, plain=["a"], column_mapping=[cm("a", Q, unit=A)]))
+    r.append(run("the accession is compared as written: lower case does not match",
+                 [], must_a, True, plain=["a"], column_mapping=[cm("a", A.lower())]))
+    r.append(run("... nor does a trailing space",
+                 [], must_a, True, plain=["a"], column_mapping=[cm("a", A + " ")]))
     r.append(run("a mapping in another table's files[] entry does not count",
                  [], must_a, True, plain=["a"], other_mapping=[cm("a", A)]))
     r.append(run("a column_mapping block that is no list is ignored, not a crash",
@@ -161,6 +176,31 @@ def main():
                  [B], one_child, False, plain=["b"], column_mapping=[cm("b", B)]))
     r.append(run("imaging gate still skips a non-imaging archive with mappings",
                  [], must_a, False, require_imaging=True, imaging=False, plain=["q"], column_mapping=[cm("q", Q)]))
+
+    # --- term markers (term_marker: true): present for a required term, never a second entry
+    xor_az = mapping("r", "XOR", [A_self, Z_self])
+    r.append(run("marker: a term-marker column satisfies a required term",
+                 [], must_a, False, plain=["a"], column_mapping=[marker("a", A)]))
+    r.append(run("marker: a marker to an absent column does not",
+                 [], must_a, True, column_mapping=[marker("nope", A)]))
+    r.append(run("marker cardinality: inflected B plus a marker for the sibling C2 is one entry",
+                 [B], one_child, False, plain=["c2"], column_mapping=[marker("c2", C2)]))
+    r.append(run("marker cardinality: two markers of sibling terms, nothing else, satisfy and are no two entries",
+                 [], one_child, False, plain=["b", "c2"], column_mapping=[marker("b", B), marker("c2", C2)]))
+    r.append(run("marker cardinality: the same accession as marker and as plain mapping is one entry",
+                 [], one_child, False, plain=["b", "b2"], column_mapping=[marker("b", B), cm("b2", B)]))
+    r.append(run("marker cardinality: two entries stay two whatever markers stand next to them",
+                 [B], one_child, True, plain=["c", "c2"], column_mapping=[cm("c2", C2), marker("c", C)]))
+    r.append(run("marker cardinality: term_marker false is an ordinary mapping (two entries)",
+                 [B], one_child, True, plain=["c2"], column_mapping=[cm("c2", C2, term_marker=False)]))
+    r.append(run("marker XOR: one entry plus a marker for the other term is not 'both'",
+                 [A], xor_az, False, plain=["z"], column_mapping=[marker("z", Z)]))
+    r.append(run("marker XOR: markers for both terms satisfy",
+                 [], xor_az, False, plain=["a", "z"], column_mapping=[marker("a", A), marker("z", Z)]))
+    r.append(run("marker XOR: two entries stay 'both'",
+                 [A], xor_az, True, plain=["z"], column_mapping=[cm("z", Z)]))
+    r.append(run("marker XOR: a marker for an unrelated term leaves the rule unmet",
+                 [], xor_az, True, plain=["q"], column_mapping=[marker("q", Q)]))
 
     profile_ok = bundled_profile()                # run both halves, whatever the first one says
     ok = all(r) and profile_ok
@@ -265,6 +305,12 @@ def bundled_profile():
         d = packed(f"{tmp}/swapped", column_mapping=swapped)
         check("swapped accessions: both terms are in the facet -> no finding here", found(d), False)
         check("... imaging_position_columns reports the swap", found(d, COLS, level="error"), True, "not the column's term IMS:1000050")
+        nested = {"pix": pa.array([[{"position_x": 1, "position_y": 1}]] * 3,
+                                  pa.list_(pa.struct([("position_x", pa.int64()), ("position_y", pa.int64())])))}
+        d = packed(f"{tmp}/nested", mf._meta(extra_scan=nested),
+                   column_mapping=[{"name": f"position {a}", "path": f"scan.pix.position_{a}", "accession": mf._POSITION_TERMS[a]} for a in "xy"])
+        check("positions nested in a list<struct> of the scan facet (scan.pix.position_x) -> warning", found(d), True,
+              "missing: position x, position y")
         d = packed(f"{tmp}/not_imaging", mf._meta(), column_mapping=[], imaging=None)
         check("not an imaging archive -> the rule does not apply", found(d), False)
 
@@ -297,6 +343,44 @@ def bundled_profile():
         check("spectrum type through a mapped boolean term-marker column (MS:1000294) -> no finding", found(d, TABLES), False)
         check("... and the archive passes without any warning",
               [f"{rep['verdict']} {rep['summary']['warnings']}W"], True, "PASS 0W")
+
+        # term markers are per-row flags: they declare their term, and are never a second spectrum type
+        def tables(name, meta, cols, mappings):
+            sp = meta.column("spectrum").combine_chunks()
+            sp = pa.StructArray.from_arrays([sp.field(i) for i in range(sp.type.num_fields)] + [a for _, a in cols],
+                                            names=[f.name for f in sp.type] + [n for n, _ in cols])
+            d = f"{tmp}/{name}"
+            mf._write(d, meta.set_column(0, "spectrum", sp), mf._data(mf.S, mf.MZ, mf.IN), column_mapping=mappings)
+            return d
+        flag = lambda v=True: pa.array([v] * 3, pa.bool_())
+        mk = lambda name, col, acc: {"name": name, "path": f"spectrum.{col}", "accession": acc, "term_marker": True}
+        calib = [mk("calibration spectrum", "opt_calibration_spectrum", "MS:1000928")]
+        d = tables("type_plus_flag", mf._meta(), [("opt_calibration_spectrum", flag(False))], calib)
+        rep = validate(d)
+        check("inflected spectrum type plus a boolean marker of a sibling type (all false) -> no 'matched by 2 entries'",
+              found(d, TABLES), False)
+        check("... and the archive passes without any warning, as before 1.18",
+              [f"{rep['verdict']} {rep['summary']['warnings']}W"], True, "PASS 0W")
+        d = tables("repr_plus_flags", mf._meta(), [("centroid", flag()), ("profile", flag(False))],
+                   [mk("centroid spectrum", "centroid", "MS:1000127"), mk("profile spectrum", "profile", "MS:1000128")])
+        check("inflected representation plus boolean centroid / profile markers -> no finding", found(d, TABLES), False)
+        d = tables("two_type_flags", mf._meta(spectrum_type=False), [("ms1", flag()), ("msn", flag(False))],
+                   [mk("MS1 spectrum", "ms1", "MS:1000579"), mk("MSn spectrum", "msn", "MS:1000580")])
+        check("two boolean markers of spectrum types, no inflected type -> no finding", found(d, TABLES), False)
+        d = tables("flag_all_false", mf._meta(spectrum_type=False), [("opt_calibration_spectrum", flag(False))], calib)
+        check("a marker that is false on every row still declares its term (values are not read) -> no finding",
+              found(d, TABLES), False)
+        plain = [{k: v for k, v in m.items() if k != "term_marker"} for m in calib]
+        d = tables("type_plus_plain", mf._meta(), [("opt_calibration_spectrum", flag(False))], plain)
+        check("the same column mapped without term_marker is a second spectrum type -> warning", found(d, TABLES), True,
+              "non-repeatable term spectrum type (MS:1000559) matched by 2 entries: ['MS:1000294', 'MS:1000928']")
+        # the spec's string marker (d0c16b3) is mapped to the PARENT; the children are its values, which
+        # this schema-only primitive does not read -> the parent does not satisfy 'a child of MS:1000559'
+        d = tables("type_string_marker", mf._meta(spectrum_type=False),
+                   [("spectrum_type", pa.array(["MS:1000294"] * 3, pa.large_string()))],
+                   [mk("spectrum type", "spectrum_type", "MS:1000559")])
+        check("a string term marker mapped to the parent MS:1000559 is still not seen as a spectrum type -> warning",
+              found(d, TABLES), True, "missing: spectrum type")
 
         # --- the fixtures: no pass fixture warns, and the rule fires exactly where a fixture expects it
         mf.build_all(f"{tmp}/fx")
