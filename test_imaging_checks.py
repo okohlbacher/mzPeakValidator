@@ -97,6 +97,26 @@ def main():
               "spectra_metadata_scans.position_x: position column is float, not an integer column")
         for t in (pa.int32(), pa.int64(), pa.uint64()):
             check(f"{t} positions -> accepted", found(split(f"{tmp}/t_{t}", XY, typ=t), COLS), False)
+        # a position column is one by its full name, not by how the name ends
+        d = split(f"{tmp}/stage", {**XY, "stage_position_x": [100, 200, 300]}, mapped=dict(zip(XY, ("IMS:1000050", "IMS:1000051"))))
+        rep = run(d)
+        check("another column ending position_x (stage_position_x = 100..300) is not a pixel position: no finding of any imaging rule",
+              [f"{f['ruleId']}: {f['message']}" for f in rep["findings"] if f["ruleId"].startswith("imaging_")], False)
+        check("... and the archive passes", [rep["verdict"]], True, "PASS")
+        d = split(f"{tmp}/stage_only", {"stage_position_x": [0, 5, 9], "stage_position_y": [0, 0, 0]}, mapped={}, imaging=None)
+        rep = run(d)
+        check("only such columns, no marker: not an imaging archive",
+              [f"{f['ruleId']}: {f['message']}" for f in rep["findings"] if f["ruleId"].startswith("imaging_")], False)
+        d = split(f"{tmp}/stage_marked", {"stage_position_x": [1, 2, 3], "stage_position_y": [1, 1, 1]}, mapped={})
+        check("only such columns, marked imaging: the position columns are missing",
+              found(d, "imaging_coordinates_1based", level="error"), True, "missing position_x and/or position_y")
+        check("... and they are not checked as position columns", found(d, COLS) + found(d, BOUNDS), False)
+        DRAFT = {"IMS_1000050_position_x": [1, 2, 3], "IMS_1000051_position_y": [1, 2, 2]}
+        d = split(f"{tmp}/draft", DRAFT, mapped={c: mf._POSITION_TERMS[c[-1]] for c in DRAFT})
+        check("the first draft's names (IMS_1000050_position_x) are still position columns: name warning",
+              found(d, COLS, level="warning"), True, "IMS_1000050_position_x: an earlier draft's column name")
+        check("... and their positions are held to the counts", found(d, BOUNDS, level="error"), True,
+              "IMS_1000051_position_y: largest position 2 lies beyond IMS:1000043")
 
         # --- imaging_ims_cv_pinned: the shapes of a uri that names no commit
         sha = mf.IMS_URI.split("/")[5]
@@ -109,9 +129,14 @@ def main():
                 ("abbreviated hash", mf.IMS_URI.replace(sha, sha[:7]), True, "does not name a commit"),
                 ("a tag", mf.IMS_URI.replace(sha, "v1.1.0"), True, "does not name a commit"),
                 ("the commit on github.com/blob, not the raw form", f"https://github.com/imzML/imzML/blob/{sha}/imagingMS.obo",
-                 True, "does not name a commit — it MUST have the form https://raw.githubusercontent.com/imzML/imzML/<commit hash>/imagingMS.obo"),
+                 True, "names a commit, but is not of the required form — it MUST have the form "
+                       "https://raw.githubusercontent.com/imzML/imzML/<commit hash>/imagingMS.obo"),
+                ("the commit over http", mf.IMS_URI.replace("https://", "http://"), True, "names a commit, but is not of the required form"),
+                ("the commit in a fork", mf.IMS_URI.replace("/imzML/imzML/", "/someone/imzML/"), True,
+                 "names a commit, but is not of the required form"),
+                ("41 hexadecimal characters", mf.IMS_URI.replace(sha, sha + "0"), True, "does not name a commit"),
                 ("the OBO purl", "http://purl.obolibrary.org/obo/imagingMS.obo", True, "does not name a commit"),
-                ("text after the form", mf.IMS_URI + "?raw=1", True, "does not name a commit"),
+                ("text after the form", mf.IMS_URI + "?raw=1", True, "names a commit, but is not of the required form"),
                 ("no uri", None, True, "the IMS uri None does not name a commit")]:
             d = split(f"{tmp}/uri_{len(R)}", XY, cv_list=ims(uri))
             check(f"IMS uri: {label} -> {'error' if expect else 'accepted'}", found(d, PIN, level="error"), expect, contains)
@@ -167,10 +192,17 @@ def main():
         obs = {**IMG, "pixel_count_source": "observed_max"}
         d = split(f"{tmp}/obs_eq", XY, imaging={**obs, "pixel_count": {"x": 3, "y": 1}})
         check("observed_max counts equal to the largest positions -> clean", found(d, BOUNDS), False)
-        d = split(f"{tmp}/obs_gt", XY, imaging={**obs, "pixel_count": {"x": 4, "y": 1}}, grid=mf._grid(nx=4))
-        check("observed_max count above the largest position -> error", found(d, BOUNDS, level="error"), True,
-              "metadata.imaging.pixel_count.x = 4 with pixel_count_source 'observed_max', but the largest position_x "
-              "in spectra_metadata_scans is 3")
+        # an archive filtered from an observed_max archive (mzpeak-convert in.mzpeak --rt ...) keeps the
+        # source grid and the marker while its largest positions shrink: 29 x 23 declared, 11 x 6 left
+        d = split(f"{tmp}/obs_filtered", {"position_x": [1, 11, 4], "position_y": [1, 6, 2]},
+                  imaging={**obs, "pixel_count": {"x": 29, "y": 23}}, grid=mf._grid(nx=29, ny=23))
+        rep = run(d)
+        check("observed_max counts above the largest positions (a filtered archive) -> clean",
+              [f["message"] for f in rep["findings"] if f["ruleId"] == BOUNDS], False)
+        check("... and the archive passes", [rep["verdict"]], True, "PASS")
+        d = split(f"{tmp}/obs_beyond", XY, imaging={**obs, "pixel_count": {"x": 2, "y": 1}}, grid=mf._grid(nx=2))
+        check("observed_max counts below the largest position -> error, like declared ones", found(d, BOUNDS, level="error"),
+              True, "position_x: largest position 3 lies beyond")
         check("observed_max without a pixel_count block: nothing to compare",
               found(split(f"{tmp}/obs_none", XY, imaging=obs, grid=mf._grid(nx=4)), BOUNDS), False)
 

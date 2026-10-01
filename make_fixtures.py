@@ -6,7 +6,7 @@ each with a sibling expected.json: {"verdict": "...", "rule": "..."}.
 Point layout, 3 spectra x 4 points. Used by smoke_test.py (into a temp dir);
 run directly to materialise them for inspection.
 """
-import hashlib, json, os, shutil
+import hashlib, json, os, re, shutil
 import pyarrow as pa, pyarrow.parquet as pq
 
 # base valid data: 3 spectra x 4 points, mz sorted ascending, intensity >= 0
@@ -19,7 +19,7 @@ TIFF_BYTES = b"II*\x00" + bytes(12)
 NOT_TIFF_BYTES = b"NOT-A-TIFF!!" + bytes(4)
 
 def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_footer=None, spectrum_type=True,
-          coord_type=pa.int64(), coord_names=None):
+          coord_type=pa.int64(), coord_names=None, extra_scan=None):
     cols = [pa.array(range(n), pa.uint64()), pa.array([1] * n, pa.uint8()),
             pa.array(["MS:1000127"] * n, pa.large_string()), pa.array(list(dp), pa.uint64())]
     names = ["index", "MS_1000511_ms_level", "MS_1000525_spectrum_representation", "MS_1003060_number_of_data_points"]
@@ -35,6 +35,8 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_foote
         xyz = (range(1, n + 1), [1] * n) if coords is True else coords   # or explicit (xs, ys[, zs])
         for axis, vals in zip("xyz", xyz):
             scols.append(pa.array(list(vals), coord_type)); snames.append((coord_names or {}).get(axis, f"position_{axis}"))  # spec #24 names
+    for name, arr in (extra_scan or {}).items():          # further scan columns, {name: pyarrow array}
+        scols.append(arr); snames.append(name)
     scan = pa.StructArray.from_arrays(scols, names=snames)
     kv = {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()}
     for k, v in (extra_footer or {}).items():            # extra footer KV blobs (e.g. file_description JSON)
@@ -178,7 +180,7 @@ def _position_mappings(columns, prefix="scan."):
     """Column-mapping entries naming the term of each pixel position column (imaging profile,
     Pixel positions: each position column MUST have one)."""
     return [{"name": f"position {c[-1]}", "path": prefix + c, "accession": _POSITION_TERMS[c[-1]]}
-            for c in columns if c[-1] in _POSITION_TERMS and c.endswith(f"position_{c[-1]}")]
+            for c in columns if re.fullmatch(r"((opt_)?IMS_\d{7}_)?position_[xyz]", c)]
 
 def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None,
            column_mapping=None, checksums=None):
@@ -491,6 +493,11 @@ def build_all(out_root):
     xyz = ([1, 2, 3], [1, 1, 1], [1, 2, 1])
     case("pass", "imaging_position_z_mapped", _meta(coords=xyz), idata, "PASS", quiet="imaging_position_columns",
          imaging={**img, "pixel_count": {"x": 3, "y": 1, "z": 2}}, extra_metadata=_grid())
+    # a column that only ends like a position column is not one: a physical stage position is no index
+    # into the pixel grid — not mapped to IMS:1000050, not an integer, below 1, beyond the counts
+    stage = {"stage_position_x": pa.array([-1250.5, 0.0, 1250.5], pa.float64())}
+    case("pass", "imaging_other_position_column", _meta(coords=True, extra_scan=stage), idata, "PASS",
+         quiet="imaging_position_columns", imaging=img, extra_metadata=_grid())
     # 6: the IMS cv_list entry names a commit; a uri on a branch, or no IMS entry at all
     on_branch = [c if c["id"] != "IMS" else {**c, "uri": IMS_URI.replace(IMS_URI.split("/")[5], "refs/heads/master")}
                  for c in _CV_LIST]
@@ -498,14 +505,16 @@ def build_all(out_root):
          imaging=img, extra_metadata=_grid(), cv_list=on_branch)
     case("fail", "imaging_ims_undeclared", imeta, idata, "FAIL", "imaging_ims_cv_pinned",
          imaging=img, extra_metadata=_grid(), cv_list=[c for c in _CV_LIST if c["id"] != "IMS"])
-    # 7: a position beyond the declared counts (scan settings, pixel_count.z), observed_max counts above
-    # the largest position; a declared grid that is not fully sampled is fine
+    # 7: a position beyond the declared counts (scan settings, pixel_count.z). A grid that is not fully
+    # sampled is fine, whether its counts are `declared` or `observed_max`: an archive filtered from an
+    # observed_max archive (mzpeak-convert in.mzpeak --rt ...) keeps the source grid and the marker while
+    # its largest positions shrink
     case("fail", "imaging_position_beyond_count", imeta, idata, "FAIL", "imaging_positions_within_grid",
          imaging=img, extra_metadata=_grid(nx=2))
     case("fail", "imaging_position_beyond_z_count", _meta(coords=xyz), idata, "FAIL", "imaging_positions_within_grid",
          imaging={**img, "pixel_count": {"x": 3, "y": 1, "z": 1}}, extra_metadata=_grid())
     sparse = {**img, "pixel_count": {"x": 5, "y": 4}}
-    case("fail", "imaging_observed_max_overstated", imeta, idata, "FAIL", "imaging_positions_within_grid",
+    case("pass", "imaging_observed_max_filtered", imeta, idata, "PASS", quiet="imaging_positions_within_grid",
          imaging={**sparse, "pixel_count_source": "observed_max"}, extra_metadata=_grid(nx=5, ny=4))
     case("pass", "imaging_grid_undersampled", imeta, idata, "PASS", quiet="imaging_length_unit_micrometre",
          imaging={**sparse, "pixel_count_source": "declared"}, extra_metadata=_grid(nx=5, ny=4))

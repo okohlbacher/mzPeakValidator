@@ -907,10 +907,16 @@ class Report:
 # ----------------------------------------------------------------------- primitives
 INFLECT = re.compile(r"^([A-Za-z]+)_(\d+)_")
 
-# Pixel position columns: the imaging profile's `position_x` / `position_y` (HUPO-PSI/mzPeak-specification#24),
-# and the older inflected `IMS_1000050_position_x` / `opt_IMS_1000050_position_x`, all end the same way.
+# Pixel position columns, by leaf name: the imaging profile's `position_x` / `position_y` / `position_z`
+# (HUPO-PSI/mzPeak-specification#24) and the two earlier drafts' inflected names, `IMS_1000050_position_x`
+# and `opt_IMS_1000050_position_x`. The name is matched in full: a column that merely ends the same way
+# (`stage_position_x`, a physical position) is not a pixel position.
+_POS_NAME = {a: re.compile(rf"(?:(?:opt_)?IMS_{n}_)?position_{a}")
+             for a, n in (("x", 1000050), ("y", 1000051), ("z", 1000052))}
+
 def _pos(k, axis):
-    return k.endswith(f"position_{axis}")
+    pat = _POS_NAME.get(axis)
+    return bool(pat and pat.fullmatch(k.rsplit(".", 1)[-1]))
 
 def _imaging(ar):
     if _dict(_dict((ar.index or {}).get("metadata")).get("imaging")).get("is_imaging"):
@@ -1706,8 +1712,9 @@ def p_imaging_position_columns(ar, rule, rep, params):
 def p_imaging_position_bounds(ar, rule, rep, params):
     """Imaging profile check 7, the data half (spec PR #25): no pixel position lies beyond the declared
     grid — IMS:1000042 / IMS:1000043 of the scan-settings entry that describes the grid, and
-    metadata.imaging.pixel_count.x/.y/.z — and counts declared `pixel_count_source: observed_max` equal
-    the largest positions. A grid need not be fully sampled, so smaller positions are fine otherwise.
+    metadata.imaging.pixel_count.x/.y/.z. A grid need not be fully sampled, so counts above the largest
+    position are fine, whatever pixel_count_source says: `observed_max` records how the writer of the
+    source conversion derived the counts, and an archive filtered from it keeps them.
     Self-gates on valid counts (their absence or shape is imaging_grid's finding). DATA_SCAN."""
     if not _imaging(ar): return
     f = _positions_file(ar)
@@ -1742,18 +1749,14 @@ def p_imaging_position_bounds(ar, rule, rep, params):
             if m > n:
                 rep.add(rule, sev, f"{f}.{path}: largest position {m} lies beyond {where} = {n} — every "
                         f"position is an index into the declared pixel grid", {"file": f, "column": path})
-        n = block.get(axis)
-        if im.get("pixel_count_source") == "observed_max" and n is not None and m < n:
-            rep.add(rule, sev, f"metadata.imaging.pixel_count.{axis} = {n} with pixel_count_source "
-                    f"'observed_max', but the largest {path} in {f} is {m} — observed counts equal the "
-                    f"largest positions", {"file": f, "column": path})
 
 def p_cv_uri_form(ar, rule, rep, params):
     """Imaging profile check 6 (spec PR #25, Vocabulary): metadata.cv_list declares the vocabulary
     params.cv and every such entry's `uri` matches params.pattern in full (params.form is the form
     shown in messages) — for IMS, which publishes no releases, a raw URL naming a 40-character commit.
-    A uri on a branch (refs/heads/<name>, master, main) is named as such. params.require_imaging gates
-    the rule on imaging archives. Index-only."""
+    A uri on a branch (refs/heads/<name>, master, main) is named as such, and so is one that names a
+    commit in another form (http, a fork, github.com/blob). params.require_imaging gates the rule on
+    imaging archives. Index-only."""
     if params.get("require_imaging") and not _imaging(ar): return
     sev, cv, form = rule.get("severity", "error"), params["cv"], params.get("form", params["pattern"])
     cvl = _dig(ar.index or {}, params.get("list", "metadata.cv_list"))
@@ -1765,8 +1768,14 @@ def p_cv_uri_form(ar, rule, rep, params):
         uri = e.get("uri")
         if isinstance(uri, str) and re.fullmatch(params["pattern"], uri):
             continue
-        branch = re.search(r"/(refs/heads/[^/]+|master|main)/", uri) if isinstance(uri, str) else None
-        why = f"names the branch '{branch.group(1)}', not a commit" if branch else "does not name a commit"
+        text = uri if isinstance(uri, str) else ""
+        branch = re.search(r"/(refs/heads/[^/]+|master|main)/", text)
+        if branch:
+            why = f"names the branch '{branch.group(1)}', not a commit"
+        elif re.search(r"/[0-9a-fA-F]{40}(?![0-9a-fA-F])", text):
+            why = "names a commit, but is not of the required form"
+        else:
+            why = "does not name a commit"
         rep.add(rule, sev, f"metadata.cv_list: the {cv} uri {uri!r} {why} — it MUST have the form {form}")
 
 # --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
