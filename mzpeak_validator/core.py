@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.16"
+CATALOG_VERSION = "1.18"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -907,10 +907,16 @@ class Report:
 # ----------------------------------------------------------------------- primitives
 INFLECT = re.compile(r"^([A-Za-z]+)_(\d+)_")
 
-# Pixel position columns: the imaging profile's `position_x` / `position_y` (HUPO-PSI/mzPeak-specification#24),
-# and the older inflected `IMS_1000050_position_x` / `opt_IMS_1000050_position_x`, all end the same way.
+# Pixel position columns, by leaf name: the imaging profile's `position_x` / `position_y` / `position_z`
+# (HUPO-PSI/mzPeak-specification#24) and the two earlier drafts' inflected names, `IMS_1000050_position_x`
+# and `opt_IMS_1000050_position_x`. The name is matched in full: a column that merely ends the same way
+# (`stage_position_x`, a physical position) is not a pixel position.
+_POS_NAME = {a: re.compile(rf"(?:(?:opt_)?IMS_{n}_)?position_{a}")
+             for a, n in (("x", 1000050), ("y", 1000051), ("z", 1000052))}
+
 def _pos(k, axis):
-    return k.endswith(f"position_{axis}")
+    pat = _POS_NAME.get(axis)
+    return bool(pat and pat.fullmatch(k.rsplit(".", 1)[-1]))
 
 def _imaging(ar):
     if _dict(_dict((ar.index or {}).get("metadata")).get("imaging")).get("is_imaging"):
@@ -1606,6 +1612,15 @@ def _scan_settings(ar):
             ssl = None
     return [s for s in ssl if isinstance(s, dict)] if isinstance(ssl, list) else []
 
+def _ss_params(s):
+    """One scan-settings entry's parameters, keyed by accession."""
+    return {p.get("accession"): p for p in (s.get("parameters") or []) if isinstance(p, dict)}
+
+def _count(v):
+    """A pixel count as an int; None unless it is an integer >= 1 (3.0 counts, "3" and true do not)."""
+    integral = (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer())
+    return int(v) if integral and v >= 1 else None
+
 def p_imaging_grid(ar, rule, rep, params):
     """Imaging profile checks 4, 5 and the pixel_count half of 7 (spec PR #25, Grid geometry): exactly
     one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; every pixel
@@ -1617,7 +1632,7 @@ def p_imaging_grid(ar, rule, rep, params):
     ssl = _scan_settings(ar)
     grids = []
     for s in ssl:
-        ps = {p.get("accession"): p for p in (s.get("parameters") or []) if isinstance(p, dict)}
+        ps = _ss_params(s)
         if all(a in ps for a in _IMS_PIXEL_COUNTS):
             grids.append((s.get("id"), ps))
         for acc in (a for a in _IMS_LENGTHS if a in ps):
@@ -1634,18 +1649,141 @@ def p_imaging_grid(ar, rule, rep, params):
     sid, ps = grids[0]
     counts = {}
     for axis, acc in zip("xy", _IMS_PIXEL_COUNTS):
-        v = ps[acc].get("value")
-        integral = (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer())
-        if not integral or v < 1:
-            rep.add(rule, sev, f"scan settings '{sid}': {acc} ({ps[acc].get('name')}) is {v!r}, not an integer >= 1")
+        n = _count(ps[acc].get("value"))
+        if n is None:
+            rep.add(rule, sev, f"scan settings '{sid}': {acc} ({ps[acc].get('name')}) is "
+                    f"{ps[acc].get('value')!r}, not an integer >= 1")
         else:
-            counts[axis] = int(v)
+            counts[axis] = n
     block = _dig(ar.index or {}, "metadata.imaging.pixel_count")
     if isinstance(block, dict):
         for axis, n in counts.items():
             if axis in block and block[axis] != n:
                 rep.add(rule, sev, f"metadata.imaging.pixel_count.{axis}={block[axis]!r} != {n} from scan settings "
                         f"'{sid}' — where the block repeats a scan-settings value the two are equal")
+
+def p_imaging_preferred_unit(ar, rule, rep, params):
+    """Imaging profile, Grid geometry (spec PR #25): pixel size, max dimension and absolute position
+    offset SHOULD use micrometre. A params.terms parameter of the scan settings that carries a unit of
+    length other than params.unit gets a finding; no unit or a non-length unit is imaging_grid's.
+    Index-only."""
+    if not _imaging(ar): return
+    isa, want = params.get("_cv_isa", {}), params.get("unit", "UO:0000017")
+    for s in _scan_settings(ar):
+        ps = _ss_params(s)
+        for acc in (a for a in params.get("terms", _IMS_LENGTHS) if a in ps):
+            unit = ps[acc].get("unit")
+            if isinstance(unit, str) and unit != want and _is_descendant(isa, unit, "UO:0000001"):
+                rep.add(rule, rule.get("severity", "warning"), f"scan settings '{s.get('id')}': {acc} "
+                        f"({ps[acc].get('name')}) = {ps[acc].get('value')!r} is written in {unit}, a unit of "
+                        f"length other than micrometre — the imaging profile recommends {want}")
+
+def _column_mappings(ar, f):
+    """The column_mapping entries (dicts) in the files[] entry of table `f` — the index names the
+    member by file name, so `f` is resolved first; [] when the entry or its block is absent or malformed."""
+    fname = ar._fname(f)
+    files = ar.index.get("files") if isinstance(ar.index, dict) else None
+    entry = next((fe for fe in files or [] if isinstance(fe, dict) and fe.get("name") == fname), {})
+    mappings = entry.get("column_mapping")
+    return [m for m in mappings if isinstance(m, dict)] if isinstance(mappings, list) else []
+
+def p_imaging_position_columns(ar, rule, rep, params):
+    """Imaging profile checks 2-3, the declaration half (spec PR #25, Pixel positions): every pixel
+    position column is an integer column and has a column-mapping entry, in the files[] entry of its
+    table, naming its term (params.terms: axis -> accession). A column under an earlier draft's name
+    (IMS_1000050_position_x, opt_IMS_1000050_position_x) is checked the same way and gets a warning
+    for the name. Index + schema only, so it runs under --quick."""
+    if not _imaging(ar): return
+    f = _positions_file(ar)
+    if f is None: return                          # no position column at all is imaging_coordinates' finding
+    sev, terms, fname = rule.get("severity", "error"), params.get("terms") or {}, ar._fname(f)
+    mappings = _column_mappings(ar, f)
+    for path, typ in ar.fields(f).items():
+        axis = next((a for a in terms if _pos(path, a)), None)
+        if axis is None: continue
+        loc, acc = {"file": f, "column": path}, terms[axis]
+        if arrow_logical(typ) not in ("int", "uint"):
+            rep.add(rule, sev, f"{f}.{path}: position column is {typ}, not an integer column — positions "
+                    f"are indices into the pixel grid", loc, recovery="none")
+        mapped = [m.get("accession") for m in mappings if m.get("path") == path]
+        if not mapped:
+            rep.add(rule, sev, f"{f}.{path}: no column_mapping entry in the files[] entry of {fname} — "
+                    f"each position column MUST have one naming its term, {acc}", loc)
+        elif acc not in mapped:
+            rep.add(rule, sev, f"{f}.{path}: its column_mapping entry names {mapped[0]!r}, not the "
+                    f"column's term {acc}", loc)
+        if path.split(".")[-1] != f"position_{axis}":
+            rep.add(rule, "warning", f"{f}.{path}: an earlier draft's column name — the imaging profile "
+                    f"names the column position_{axis}", loc, recovery="none")
+
+def p_imaging_position_bounds(ar, rule, rep, params):
+    """Imaging profile check 7, the data half (spec PR #25): no pixel position lies beyond the declared
+    grid — IMS:1000042 / IMS:1000043 of the scan-settings entry that describes the grid, and
+    metadata.imaging.pixel_count.x/.y/.z. A grid need not be fully sampled, so counts above the largest
+    position are fine, whatever pixel_count_source says: `observed_max` records how the writer of the
+    source conversion derived the counts, and an archive filtered from it keeps them.
+    Self-gates on valid counts (their absence or shape is imaging_grid's finding). DATA_SCAN."""
+    if not _imaging(ar): return
+    f = _positions_file(ar)
+    if f is None: return
+    sev, largest = rule.get("severity", "error"), {}              # axis -> (largest set position, column)
+    for path, typ in ar.fields(f).items():
+        axis = next((a for a in "xyz" if _pos(path, a)), None)
+        if axis is None or arrow_logical(typ) not in ("int", "uint", "float", "double"):
+            continue
+        for (arr,) in ar.iter_batches(f, path):
+            m = pc.max(arr).as_py()
+            if m is not None and (axis not in largest or m > largest[axis][0]):
+                largest[axis] = (m, path)
+    limits = {}                                                   # axis -> {count: where it is declared}
+    grids = [(s.get("id"), ps) for s, ps in ((s, _ss_params(s)) for s in _scan_settings(ar))
+             if all(a in ps for a in _IMS_PIXEL_COUNTS)]
+    if len(grids) == 1:
+        sid, ps = grids[0]
+        for axis, acc in zip("xy", _IMS_PIXEL_COUNTS):
+            n = _count(ps[acc].get("value"))
+            if n is not None:
+                limits.setdefault(axis, {})[n] = f"{acc} ({ps[acc].get('name')}) of scan settings '{sid}'"
+    im = _dig(ar.index or {}, "metadata.imaging")
+    im = im if isinstance(im, dict) else {}
+    block = im.get("pixel_count")
+    block = {a: _count(block.get(a)) for a in "xyz"} if isinstance(block, dict) else {}
+    for axis, n in block.items():
+        if n is not None:
+            limits.setdefault(axis, {}).setdefault(n, f"metadata.imaging.pixel_count.{axis}")
+    for axis, (m, path) in sorted(largest.items()):
+        for n, where in sorted(limits.get(axis, {}).items()):
+            if m > n:
+                rep.add(rule, sev, f"{f}.{path}: largest position {m} lies beyond {where} = {n} — every "
+                        f"position is an index into the declared pixel grid", {"file": f, "column": path})
+
+def p_cv_uri_form(ar, rule, rep, params):
+    """Imaging profile check 6 (spec PR #25, Vocabulary): metadata.cv_list declares the vocabulary
+    params.cv and every such entry's `uri` matches params.pattern in full (params.form is the form
+    shown in messages) — for IMS, which publishes no releases, a raw URL naming a 40-character commit.
+    A uri on a branch (refs/heads/<name>, master, main) is named as such, and so is one that names a
+    commit in another form (http, a fork, github.com/blob). params.require_imaging gates the rule on
+    imaging archives. Index-only."""
+    if params.get("require_imaging") and not _imaging(ar): return
+    sev, cv, form = rule.get("severity", "error"), params["cv"], params.get("form", params["pattern"])
+    cvl = _dig(ar.index or {}, params.get("list", "metadata.cv_list"))
+    entries = [e for e in (cvl if isinstance(cvl, list) else []) if isinstance(e, dict) and e.get("id") == cv]
+    if not entries:
+        rep.add(rule, sev, f"metadata.cv_list does not declare {cv} — it MUST be declared, with a uri of the "
+                f"form {form}")
+    for e in entries:
+        uri = e.get("uri")
+        if isinstance(uri, str) and re.fullmatch(params["pattern"], uri):
+            continue
+        text = uri if isinstance(uri, str) else ""
+        branch = re.search(r"/(refs/heads/[^/]+|master|main)/", text)
+        if branch:
+            why = f"names the branch '{branch.group(1)}', not a commit"
+        elif re.search(r"/[0-9a-fA-F]{40}(?![0-9a-fA-F])", text):
+            why = "names a commit, but is not of the required form"
+        else:
+            why = "does not name a commit"
+        rep.add(rule, sev, f"metadata.cv_list: the {cv} uri {uri!r} {why} — it MUST have the form {form}")
 
 # --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
 TIFF_MAGIC = (b"II*\x00", b"MM\x00*")            # little/big-endian baseline TIFF (and BigTIFF shares II*/MM* prefixes)
@@ -1758,14 +1896,21 @@ def _term_matches(acc, term, isa):
 
 _CVMAP_LOGIC = {"AND": "all of", "OR": "one of", "XOR": "exactly one of"}
 
-def _cvmap_eval(cr, present, isa, rule, rep, emit, where, loc):
+def _cvmap_eval(cr, present, isa, rule, rep, emit, where, loc, markers=frozenset()):
     """Apply one CvMappingRule to the set of accessions `present` at scope `where`: combination logic
     (AND/OR/XOR) over its cv_terms, plus per-term cardinality (is_repeatable). Shared by the facet
-    resolver (p_cv_mapping) and the JSON-metadata resolver (p_cv_mapping_json)."""
+    resolver (p_cv_mapping) and the JSON-metadata resolver (p_cv_mapping_json).
+    `markers` are accessions the scope carries as per-row term markers (a column_mapping entry with
+    term_marker: true — the term holds on the rows the column says, and several marker columns of
+    sibling terms are how a per-row choice is written). A marker satisfies a required term, but it is
+    never a second entry: it is left out of the cardinality count and out of XOR's "more than one"."""
     terms = cr.get("cv_terms", [])
     logic = cr.get("cv_terms_combination_logic", "AND")
-    sat = {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in present)}
-    ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" else (len(sat) == 1)
+    hit = lambda accs: {i for i, t in enumerate(terms) if any(_term_matches(a, t, isa) for a in accs)}
+    entries = hit(present)
+    sat = entries | hit(markers)
+    ok = (len(sat) == len(terms)) if logic == "AND" else (len(sat) >= 1) if logic == "OR" \
+        else (len(sat) >= 1 and len(entries) <= 1)
     if not ok:
         want = ", ".join(f"{t.get('term_name')} ({t.get('term_accession')})" for t in terms)
         miss = ", ".join(terms[i].get("term_name") for i in range(len(terms)) if i not in sat) or "(combination unmet)"
@@ -1785,8 +1930,17 @@ def p_cv_mapping(ar, rule, rep, params):
     """CV term-placement over the packed Parquet facets (PSI CvMapping model, mzPeak port — see
     docs/cv-mapping-design.md). Consumes a bundled CvMapping file (params._mapping = the spec's
     table_rules.json / imaging rules); for each rule, maps scope_path -> an mzPeak facet (params.path_map),
-    gathers the accessions inflected into that facet's column names, and checks them with _cvmap_eval.
-    Schema-only (no row decode) -> runs under --quick. MUST emits at this rule's severity; SHOULD ->
+    gathers the accessions the facet's columns carry, and checks them with _cvmap_eval. A column carries
+    a term in one of two ways: inflected into its name (scan.IMS_1000050_position_x), or through a
+    column_mapping entry in the files[] entry of the table (path scan.position_x, accession IMS:1000050
+    — how the imaging profile's position_x / position_y carry theirs). A mapping counts only when its
+    path names a direct child column of the facet (<facet>.<column> — the columns the name route reads;
+    a nested structure is a scope of its own) that exists in the Parquet schema, so an entry that points
+    at an absent column declares nothing (column_mapping reports the dangling path). Only its
+    `accession` counts, compared as written; its `unit` is not a term of the facet.
+    A term_marker: true mapping is a per-row marker: its accession satisfies a required term (values
+    are not read, as for an inflected column), but it is not an entry for cardinality — see _cvmap_eval.
+    Schema + index only (no row decode) -> runs under --quick. MUST emits at this rule's severity; SHOULD ->
     warning; MAY skipped (Phase 1). Self-gates on an unmapped scope_path or an absent file/facet."""
     mapping = params.get("_mapping")
     if not mapping:
@@ -1810,8 +1964,13 @@ def p_cv_mapping(ar, rule, rep, params):
             continue                              # facet absent in this archive -> skip
         present = {f"{code}:{num}" for path in fields if path.startswith(facet + ".")
                    for code, num in _cv_refs(path.split(".")[-1])}
+        markers = set()
+        for m in _column_mappings(ar, f):         # terms declared by column mapping rather than by name
+            path, acc = m.get("path"), m.get("accession")
+            if isinstance(path, str) and isinstance(acc, str) and path in fields and path.startswith(facet + "."):
+                (markers if m.get("term_marker") is True else present).add(acc)
         emit = sev_must if cr.get("requirement_level") == "MUST" else "warning"
-        _cvmap_eval(cr, present, isa, rule, rep, emit, f"{f} [{facet}]", {"file": f, "facet": facet})
+        _cvmap_eval(cr, present, isa, rule, rep, emit, f"{f} [{facet}]", {"file": f, "facet": facet}, markers)
 
 def _json_seg(seg):
     """Parse one path segment: 'components[component_type=ionsource]' -> ('components', True, ('component_type','ionsource'));
@@ -2310,13 +2469,15 @@ PRIMITIVES = {
     "member_checksum": p_member_checksum, "cv_terms_exist": p_cv_terms_exist,
     "imaging_marker": p_imaging_marker, "imaging_position_pairs": p_imaging_position_pairs,
     "imaging_grid": p_imaging_grid, "image_index_entry": p_image_index_entry,
+    "imaging_position_columns": p_imaging_position_columns, "imaging_position_bounds": p_imaging_position_bounds,
+    "imaging_preferred_unit": p_imaging_preferred_unit, "cv_uri_form": p_cv_uri_form,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap.
 # member_checksum and cv_terms_exist are not listed: they limit their own reads under --quick.
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
              "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates",
              "chunk_bounds", "aux_arrays", "column_not_all_null", "count_implies_rows",
-             "imaging_position_pairs"}
+             "imaging_position_pairs", "imaging_position_bounds"}
 
 # -------------------------------------------------------------------------------- profile cache
 @functools.lru_cache(maxsize=8)
@@ -2384,7 +2545,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
             elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
-            elif prim == "imaging_grid":
+            elif prim in ("imaging_grid", "imaging_preferred_unit"):
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim == "cv_list_consistency":
                 params["_cv_versions"] = rep.cv_versions

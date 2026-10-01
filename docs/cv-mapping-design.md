@@ -39,6 +39,25 @@ XML model), e.g. `/spectrum/scan_list/scans[]/parameters[]/accession`. mzPeak st
 `selected_ion`) whose CV params are **inflected into column names** `${CV}_${ACC}_${name}`. So "the set of
 CV accessions at a scope" = the accessions parsed out of the column names under that facet.
 
+Since catalog 1.18 that set also holds the accessions the facet's columns carry through **column mappings**:
+a `files[].column_mapping[]` entry of the table whose `path` is `<facet>.<column>` — a direct child column of
+the facet that exists in the Parquet schema, the same columns the name route reads — and which names an
+`accession` (`scan.position_x` → `IMS:1000050`). The spec moved from inflected names to plain names with
+column mappings (the imaging profile's `position_x` / `position_y`), and a primitive that reads names alone
+reports every such term as missing. A mapping to an absent column, to a column of another facet, to a child
+of a nested list or struct inside the facet (a scope of its own in the CvMapping model), without an
+accession, or in another table's `files[]` entry adds nothing; a mapping's `unit` is not a term of the facet.
+
+**Term markers.** A mapping with `term_marker: true` is a per-row marker: a boolean column says on which rows
+its term holds, and several marker columns of sibling terms are how a per-row choice is written. The
+primitive reads no values, so it treats a marker as follows: its accession **satisfies a required term**
+(a marker that is false on every row still declares it, as an all-null inflected column does), but it is
+**not an entry** — it is left out of the cardinality count and out of XOR's "more than one". An inflected
+spectrum type next to a boolean `opt_calibration_spectrum` marker is therefore one spectrum type, not two.
+A string term marker contributes the accession it is mapped to, which is the parent of the CURIEs it holds;
+a rule that wants a child of that parent (spectrum type, `MS:1000559`) is not satisfied by it. Reading the
+values would settle all three cases and is not done: the primitive is schema + index only.
+
 The evaluator therefore needs a **path → facet map**. Phase-1 mapping (in the engine rule's `path_map`
 param, so it is data-driven, not code):
 
@@ -77,7 +96,8 @@ accession *set*; Phase 1 extends it to also build a merged `cv_isa` (child→par
 - **Engine rules** (in `rules/semantic.rules.json`) are thin: one rule per bundled mapping file, carrying the
   `path_map`, a `require_imaging` gate, and a `fix` tip. `cv_term_placement_tables` →
   `cv_mapping/table_rules.json`; `cv_term_placement_imaging` → `cv_mapping/imaging_table_rules.json`.
-- Schema-only (reads column names, not row data) → **runs under `--quick`**, not in `DATA_SCAN`.
+- Schema + index only (reads column names and column mappings, not row data) → **runs under `--quick`**, not
+  in `DATA_SCAN`.
 
 ## 5. Severity decision — calibrated against the corpus, shipped advisory
 
@@ -121,6 +141,10 @@ mapping (notably scan combination and the data-array terms).
 - **Imaging CvMapping** (`cv_mapping/imaging_table_rules.json`, gated `require_imaging`): when the archive is
   imaging, the `scan` facet MUST carry `IMS:1000050` (position x) **and** `IMS:1000051` (position y). This is
   the mzPeak analogue of the mzML MALDI object rules (`LaserWavelengthObjectRule` etc.) and complements the
-  existing `imaging_coordinates_1based` (which checks the *values* once the columns exist).
+  existing `imaging_coordinates_1based` (which checks the *values* once the columns exist). The columns carry
+  the two terms through their column mappings (`scan.position_x` / `scan.position_y`, catalog 1.18) or, in
+  earlier drafts, in their names. Packed layout only: in the split layout the positions live in
+  `spectra_metadata_scans.parquet`, where `imaging_coordinates_1based` and `imaging_position_columns` report a
+  missing column or mapping as errors and this rule would only repeat them as warnings.
 - **Fix tips** — adopting the mzML validator's `getHowToFixTips()` convention: rules may carry a `fix` string,
   surfaced on the finding (JSON + console). Applied to the new rules and a few high-traffic existing ones.
