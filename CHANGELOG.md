@@ -14,21 +14,28 @@ Releases before 0.9.22 are recorded in the git history and in the catalog list i
     for the name. Schema-only, so it runs under `--quick`.
   - `imaging_ims_cv_pinned` (error): an imaging archive declares `IMS` in `cv_list` with a uri of the form
     `https://raw.githubusercontent.com/imzML/imzML/<commit hash>/imagingMS.obo`, with a 40-character hash. A uri
-    on a branch (`refs/heads/master`, `/master/`) is reported as such. The corpus archives written by
-    mzpeak-convert 0.15.0 carry the branch uri and now fail.
+    on a branch (`refs/heads/master`, `/master/`) is reported as such, and so is a uri that names the commit
+    in another form (http, a fork, `github.com/.../blob/`). The corpus archives written by mzpeak-convert 0.15.0
+    carry the branch uri and now fail.
   - `imaging_positions_within_grid` (error): no position exceeds the declared pixel counts (`IMS:1000042` /
-    `IMS:1000043` in the scan settings, `metadata.imaging.pixel_count`, `z` included), and counts marked
-    `pixel_count_source: observed_max` equal the largest positions. A declared grid that is not fully sampled
-    passes. A data scan, skipped by `--quick`.
+    `IMS:1000043` in the scan settings, `metadata.imaging.pixel_count`, `z` included). A grid that is not fully
+    sampled passes, whether its counts are `declared` or `observed_max`: an archive that mzpeak-convert filters
+    from an `observed_max` archive (`in.mzpeak --rt ...`) keeps the source grid and the marker while its largest
+    positions shrink. A data scan, skipped by `--quick`.
 - **Length units other than micrometre (`imaging_length_unit_micrometre`, warning).** The profile accepts any unit
   of length for pixel size, max dimension and absolute position offset and recommends micrometre; another length
   unit, such as the centimetre accession some imzML writers attach to micrometre values, is now a warning. A
   missing or non-length unit stays the error of `imaging_grid_settings`.
-- 12 new fixtures (80 in total) and `test_imaging_checks.py`.
+- 13 new fixtures (81 in total) and `test_imaging_checks.py`.
 
 ### Changed
 - The imaging fixtures carry what the profile requires of them: column mappings for their position columns and
   the commit-pinned IMS uri.
+- **A pixel position column is one by its full name**: `position_x` / `position_y` / `position_z`, or an earlier
+  draft's `IMS_1000050_position_x` / `opt_IMS_1000050_position_x`. Until now any scan column whose name ended in
+  `position_x` counted, so a column such as `stage_position_x` marked the archive as imaging and was held to the
+  position rules (counted from 1, paired, and with 1.17 mapped, integer and inside the grid). No archive in the
+  corpus has such a column.
 
 ### Added (catalog 1.16)
 - **Member checksums (`member_checksum_sha512`, error).** Every `files[]` entry that declares a `checksum` has its
