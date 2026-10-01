@@ -2,9 +2,29 @@
 
 Releases before 0.9.22 are recorded in the git history and in the catalog list in CLAUDE.md.
 
-## Unreleased (rule-primitive catalog 1.17)
+## Unreleased (rule-primitive catalog 1.18)
 
-### Added
+### Fixed (catalog 1.18)
+- **`cv_term_placement_imaging` no longer warns on imaging archives that name their position columns as the
+  imaging profile does.** The `cv_mapping` primitive built the set of terms in a facet from inflected column
+  names alone (`scan.IMS_1000050_position_x`). The profile's columns are `scan.position_x` / `scan.position_y`,
+  which carry `IMS:1000050` / `IMS:1000051` through `column_mapping` entries in the `files[]` entry of their
+  table, so every packed-layout imaging archive with those names got "requires all of [position x, position y];
+  missing: position x, position y" — as did all 31 packed imaging fixtures, which have used those names since
+  0.9.23. A term now counts when a column of the facet carries it either way. A mapping counts only if its `path` lies inside the facet (`scan.…`) and resolves
+  to a column of the Parquet schema, and it names an accession; a mapping to an absent column, in another
+  facet, or in another table's `files[]` entry counts for nothing. The rule still warns on a packed imaging
+  archive whose scan facet has neither, and when both columns are mapped to the same term. The same applies to
+  `cv_term_placement_tables` (a spectrum type declared through a mapped term-marker column is now seen).
+  Catalog 1.18, because the behaviour of an existing primitive changed.
+- **The split layout is left to the imaging rules.** `cv_term_placement_imaging` evaluates the scan facet of
+  `spectra_metadata`; mzpeak-convert writes positions to `spectra_metadata_scans.parquet`, where the rule does
+  not run. On that layout `imaging_coordinates_1based` (no position columns) and `imaging_position_columns` (no
+  mapping, or a mapping naming another term) already report these cases as errors, so the rule would only
+  repeat them as warnings. Its `doc` says so. No finding on real converter output changes.
+- 3 new fixtures (84 in total) and 51 new checks in `test_cv_mapping.py`.
+
+### Added (catalog 1.17)
 - **The remaining imaging profile checks** (spec PR #25, "What a validator checks" 2, 3, 6 and 7; catalog 1.17).
   A re-test for HUPO-PSI/mzPeak-specification#23 found three kinds of broken imaging archive that passed:
   - `imaging_position_columns` (error): `position_x`, `position_y` and, when present, `position_z` are integer
@@ -28,7 +48,7 @@ Releases before 0.9.22 are recorded in the git history and in the catalog list i
   missing or non-length unit stays the error of `imaging_grid_settings`.
 - 13 new fixtures (81 in total) and `test_imaging_checks.py`.
 
-### Changed
+### Changed (catalog 1.17)
 - The imaging fixtures carry what the profile requires of them: column mappings for their position columns and
   the commit-pinned IMS uri.
 - **A pixel position column is one by its full name**: `position_x` / `position_y` / `position_z`, or an earlier
