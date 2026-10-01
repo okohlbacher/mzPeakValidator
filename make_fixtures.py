@@ -18,7 +18,8 @@ IN = [5., 4., 3., 2.] * 3
 TIFF_BYTES = b"II*\x00" + bytes(12)
 NOT_TIFF_BYTES = b"NOT-A-TIFF!!" + bytes(4)
 
-def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_footer=None, spectrum_type=True):
+def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_footer=None, spectrum_type=True,
+          coord_type=pa.int64(), coord_names=None):
     cols = [pa.array(range(n), pa.uint64()), pa.array([1] * n, pa.uint8()),
             pa.array(["MS:1000127"] * n, pa.large_string()), pa.array(list(dp), pa.uint64())]
     names = ["index", "MS_1000511_ms_level", "MS_1000525_spectrum_representation", "MS_1003060_number_of_data_points"]
@@ -33,7 +34,7 @@ def _meta(n=3, total=12, dp=(4, 4, 4), bogus_cv=False, coords=False, extra_foote
     if coords:                                            # promoted 1-based imaging coordinates on the scan facet
         xyz = (range(1, n + 1), [1] * n) if coords is True else coords   # or explicit (xs, ys[, zs])
         for axis, vals in zip("xyz", xyz):
-            scols.append(pa.array(list(vals), pa.int64())); snames.append(f"position_{axis}")  # spec #24 names
+            scols.append(pa.array(list(vals), coord_type)); snames.append((coord_names or {}).get(axis, f"position_{axis}"))  # spec #24 names
     scan = pa.StructArray.from_arrays(scols, names=snames)
     kv = {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(total).encode()}
     for k, v in (extra_footer or {}).items():            # extra footer KV blobs (e.g. file_description JSON)
@@ -164,10 +165,20 @@ def _meta_packed(n=3, pad=4, dp=(4, 4, 4)):
     return pa.table({"spectrum": spectrum, "scan": scan, "precursor": precursor}).replace_schema_metadata(
         {b"spectrum_count": str(n).encode(), b"spectrum_data_point_count": str(sum(dp)).encode()})
 
+# the imaging vocabulary publishes no releases: its uri names a commit (imaging profile, Vocabulary)
+IMS_URI = "https://raw.githubusercontent.com/imzML/imzML/2c28b05ca297430303627d8c7d192cac1a2b1374/imagingMS.obo"
 _CV_LIST = [   # CVs the fixtures use; versions match the profile's pinned snapshots
     {"id": "MS",  "version": "4.1.254",    "uri": "http://purl.obolibrary.org/obo/ms.obo",        "full_name": "PSI-MS"},
-    {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
+    {"id": "IMS", "version": "1.1.0",      "uri": IMS_URI,                                        "full_name": "Imaging MS"},
     {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}]
+
+_POSITION_TERMS = {"x": "IMS:1000050", "y": "IMS:1000051", "z": "IMS:1000052"}
+
+def _position_mappings(columns, prefix="scan."):
+    """Column-mapping entries naming the term of each pixel position column (imaging profile,
+    Pixel positions: each position column MUST have one)."""
+    return [{"name": f"position {c[-1]}", "path": prefix + c, "accession": _POSITION_TERMS[c[-1]]}
+            for c in columns if c[-1] in _POSITION_TERMS and c.endswith(f"position_{c[-1]}")]
 
 def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, members=None, cv_list=None, extra_metadata=None,
            column_mapping=None, checksums=None):
@@ -180,6 +191,8 @@ def _write(d, meta, data, extra_files=None, write_data=True, imaging=None, membe
         open(p, "wb").write(payload)
     files = [{"name": "spectra_metadata.parquet", "entity_type": "spectrum", "data_kind": "metadata"},
              {"name": "spectra_data.parquet", "entity_type": "spectrum", "data_kind": "data arrays"}]
+    if column_mapping is None and "scan" in meta.column_names:   # position columns come with their mappings
+        column_mapping = _position_mappings(f.name for f in meta.schema.field("scan").type) or None
     if column_mapping is not None: files[0]["column_mapping"] = column_mapping
     for fe in files:                                      # checksums: {member: declared digest, or None = the true SHA-512}
         if fe["name"] in (checksums or {}):
@@ -298,7 +311,7 @@ def build_all(out_root):
     # declared version must NOT warn — the default 'pass/valid' fixture (cv_list pinned-exact) covers that.
     case("pass", "cv_version_newer_than_pin", _meta(), _data(S, MZ, IN), "PASS", warn="cv_list_declared",
          cv_list=[{"id": "MS",  "version": "4.1.999",    "uri": "http://purl.obolibrary.org/obo/ms.obo",        "full_name": "PSI-MS"},
-                  {"id": "IMS", "version": "1.1.0",      "uri": "http://purl.obolibrary.org/obo/imagingMS.obo", "full_name": "Imaging MS"},
+                  {"id": "IMS", "version": "1.1.0",      "uri": IMS_URI,                                        "full_name": "Imaging MS"},
                   {"id": "UO",  "version": "2026-01-16", "uri": "http://purl.obolibrary.org/obo/uo.obo",        "full_name": "Unit Ontology"}])
 
     # sorting_rank gate: monotonicity is enforced only when the array index declares m/z sorted.
@@ -460,6 +473,46 @@ def build_all(out_root):
             ("imaging_pixel_size_not_length", _grid(pixel_unit="UO:0000010"), img),          # UO:0000010 = second
             ("imaging_pixel_count_mismatch", _grid(), {**img, "pixel_count": {"x": 4, "y": 1}})]:
         case("fail", name, imeta, idata, "FAIL", "imaging_grid_settings", imaging=im, extra_metadata=extra)
+
+    # catalog 1.17 (HUPO-PSI/mzPeak-specification#23 follow-up; every fail case here passed catalog 1.16).
+    # 2-3: a position column without its column mapping, mapped to another axis' term, or not an integer
+    # column; an earlier draft's column name is held to the same and warned about
+    case("fail", "imaging_position_unmapped", imeta, idata, "FAIL", "imaging_position_columns",
+         imaging=img, extra_metadata=_grid(), column_mapping=[])
+    swapped = [{**m, "accession": a} for m, a in zip(_position_mappings(["position_x", "position_y"]),
+                                                     ("IMS:1000051", "IMS:1000050"))]
+    case("fail", "imaging_position_wrong_term", imeta, idata, "FAIL", "imaging_position_columns",
+         imaging=img, extra_metadata=_grid(), column_mapping=swapped)
+    case("fail", "imaging_position_not_integer", _meta(coords=True, coord_type=pa.float64()), idata, "FAIL",
+         "imaging_position_columns", imaging=img, extra_metadata=_grid())
+    old = {"x": "opt_IMS_1000050_position_x", "y": "opt_IMS_1000051_position_y"}   # mzpeak-convert 0.15.0
+    case("pass", "imaging_position_old_name", _meta(coords=True, coord_names=old), idata, "PASS",
+         warn="imaging_position_columns", imaging=img, extra_metadata=_grid())
+    xyz = ([1, 2, 3], [1, 1, 1], [1, 2, 1])
+    case("pass", "imaging_position_z_mapped", _meta(coords=xyz), idata, "PASS", quiet="imaging_position_columns",
+         imaging={**img, "pixel_count": {"x": 3, "y": 1, "z": 2}}, extra_metadata=_grid())
+    # 6: the IMS cv_list entry names a commit; a uri on a branch, or no IMS entry at all
+    on_branch = [c if c["id"] != "IMS" else {**c, "uri": IMS_URI.replace(IMS_URI.split("/")[5], "refs/heads/master")}
+                 for c in _CV_LIST]
+    case("fail", "imaging_ims_uri_on_branch", imeta, idata, "FAIL", "imaging_ims_cv_pinned",
+         imaging=img, extra_metadata=_grid(), cv_list=on_branch)
+    case("fail", "imaging_ims_undeclared", imeta, idata, "FAIL", "imaging_ims_cv_pinned",
+         imaging=img, extra_metadata=_grid(), cv_list=[c for c in _CV_LIST if c["id"] != "IMS"])
+    # 7: a position beyond the declared counts (scan settings, pixel_count.z), observed_max counts above
+    # the largest position; a declared grid that is not fully sampled is fine
+    case("fail", "imaging_position_beyond_count", imeta, idata, "FAIL", "imaging_positions_within_grid",
+         imaging=img, extra_metadata=_grid(nx=2))
+    case("fail", "imaging_position_beyond_z_count", _meta(coords=xyz), idata, "FAIL", "imaging_positions_within_grid",
+         imaging={**img, "pixel_count": {"x": 3, "y": 1, "z": 1}}, extra_metadata=_grid())
+    sparse = {**img, "pixel_count": {"x": 5, "y": 4}}
+    case("fail", "imaging_observed_max_overstated", imeta, idata, "FAIL", "imaging_positions_within_grid",
+         imaging={**sparse, "pixel_count_source": "observed_max"}, extra_metadata=_grid(nx=5, ny=4))
+    case("pass", "imaging_grid_undersampled", imeta, idata, "PASS", quiet="imaging_length_unit_micrometre",
+         imaging={**sparse, "pixel_count_source": "declared"}, extra_metadata=_grid(nx=5, ny=4))
+    # a pixel size in a length unit other than micrometre is valid, and warned about (SHOULD): the
+    # centimetre accession imzML writers attach to micrometre values
+    case("pass", "imaging_pixel_size_centimetre", imeta, idata, "PASS", warn="imaging_length_unit_micrometre",
+         imaging=img, extra_metadata=_grid(pixel_unit="UO:0000015"))
 
     # Core Basic Integrity: files[].checksum is the member's SHA-512 (review 2026-09-30 A1: stale digests passed)
     case("pass", "member_checksum_ok", _meta(), _data(S, MZ, IN), "PASS", quiet="member_checksum_sha512",

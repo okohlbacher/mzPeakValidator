@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.16"
+CATALOG_VERSION = "1.17"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1606,6 +1606,15 @@ def _scan_settings(ar):
             ssl = None
     return [s for s in ssl if isinstance(s, dict)] if isinstance(ssl, list) else []
 
+def _ss_params(s):
+    """One scan-settings entry's parameters, keyed by accession."""
+    return {p.get("accession"): p for p in (s.get("parameters") or []) if isinstance(p, dict)}
+
+def _count(v):
+    """A pixel count as an int; None unless it is an integer >= 1 (3.0 counts, "3" and true do not)."""
+    integral = (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer())
+    return int(v) if integral and v >= 1 else None
+
 def p_imaging_grid(ar, rule, rep, params):
     """Imaging profile checks 4, 5 and the pixel_count half of 7 (spec PR #25, Grid geometry): exactly
     one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; every pixel
@@ -1617,7 +1626,7 @@ def p_imaging_grid(ar, rule, rep, params):
     ssl = _scan_settings(ar)
     grids = []
     for s in ssl:
-        ps = {p.get("accession"): p for p in (s.get("parameters") or []) if isinstance(p, dict)}
+        ps = _ss_params(s)
         if all(a in ps for a in _IMS_PIXEL_COUNTS):
             grids.append((s.get("id"), ps))
         for acc in (a for a in _IMS_LENGTHS if a in ps):
@@ -1634,18 +1643,131 @@ def p_imaging_grid(ar, rule, rep, params):
     sid, ps = grids[0]
     counts = {}
     for axis, acc in zip("xy", _IMS_PIXEL_COUNTS):
-        v = ps[acc].get("value")
-        integral = (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer())
-        if not integral or v < 1:
-            rep.add(rule, sev, f"scan settings '{sid}': {acc} ({ps[acc].get('name')}) is {v!r}, not an integer >= 1")
+        n = _count(ps[acc].get("value"))
+        if n is None:
+            rep.add(rule, sev, f"scan settings '{sid}': {acc} ({ps[acc].get('name')}) is "
+                    f"{ps[acc].get('value')!r}, not an integer >= 1")
         else:
-            counts[axis] = int(v)
+            counts[axis] = n
     block = _dig(ar.index or {}, "metadata.imaging.pixel_count")
     if isinstance(block, dict):
         for axis, n in counts.items():
             if axis in block and block[axis] != n:
                 rep.add(rule, sev, f"metadata.imaging.pixel_count.{axis}={block[axis]!r} != {n} from scan settings "
                         f"'{sid}' — where the block repeats a scan-settings value the two are equal")
+
+def p_imaging_preferred_unit(ar, rule, rep, params):
+    """Imaging profile, Grid geometry (spec PR #25): pixel size, max dimension and absolute position
+    offset SHOULD use micrometre. A params.terms parameter of the scan settings that carries a unit of
+    length other than params.unit gets a finding; no unit or a non-length unit is imaging_grid's.
+    Index-only."""
+    if not _imaging(ar): return
+    isa, want = params.get("_cv_isa", {}), params.get("unit", "UO:0000017")
+    for s in _scan_settings(ar):
+        ps = _ss_params(s)
+        for acc in (a for a in params.get("terms", _IMS_LENGTHS) if a in ps):
+            unit = ps[acc].get("unit")
+            if isinstance(unit, str) and unit != want and _is_descendant(isa, unit, "UO:0000001"):
+                rep.add(rule, rule.get("severity", "warning"), f"scan settings '{s.get('id')}': {acc} "
+                        f"({ps[acc].get('name')}) = {ps[acc].get('value')!r} is written in {unit}, a unit of "
+                        f"length other than micrometre — the imaging profile recommends {want}")
+
+def p_imaging_position_columns(ar, rule, rep, params):
+    """Imaging profile checks 2-3, the declaration half (spec PR #25, Pixel positions): every pixel
+    position column is an integer column and has a column-mapping entry, in the files[] entry of its
+    table, naming its term (params.terms: axis -> accession). A column under an earlier draft's name
+    (IMS_1000050_position_x, opt_IMS_1000050_position_x) is checked the same way and gets a warning
+    for the name. Index + schema only, so it runs under --quick."""
+    if not _imaging(ar): return
+    f = _positions_file(ar)
+    if f is None: return                          # no position column at all is imaging_coordinates' finding
+    sev, terms, fname = rule.get("severity", "error"), params.get("terms") or {}, ar._fname(f)
+    entry = next((fe for fe in (ar.index or {}).get("files") or []
+                  if isinstance(fe, dict) and fe.get("name") == fname), {})
+    mappings = [m for m in entry.get("column_mapping") or [] if isinstance(m, dict)]
+    for path, typ in ar.fields(f).items():
+        axis = next((a for a in terms if _pos(path, a)), None)
+        if axis is None: continue
+        loc, acc = {"file": f, "column": path}, terms[axis]
+        if arrow_logical(typ) not in ("int", "uint"):
+            rep.add(rule, sev, f"{f}.{path}: position column is {typ}, not an integer column — positions "
+                    f"are indices into the pixel grid", loc, recovery="none")
+        mapped = [m.get("accession") for m in mappings if m.get("path") == path]
+        if not mapped:
+            rep.add(rule, sev, f"{f}.{path}: no column_mapping entry in the files[] entry of {fname} — "
+                    f"each position column MUST have one naming its term, {acc}", loc)
+        elif acc not in mapped:
+            rep.add(rule, sev, f"{f}.{path}: its column_mapping entry names {mapped[0]!r}, not the "
+                    f"column's term {acc}", loc)
+        if path.split(".")[-1] != f"position_{axis}":
+            rep.add(rule, "warning", f"{f}.{path}: an earlier draft's column name — the imaging profile "
+                    f"names the column position_{axis}", loc, recovery="none")
+
+def p_imaging_position_bounds(ar, rule, rep, params):
+    """Imaging profile check 7, the data half (spec PR #25): no pixel position lies beyond the declared
+    grid — IMS:1000042 / IMS:1000043 of the scan-settings entry that describes the grid, and
+    metadata.imaging.pixel_count.x/.y/.z — and counts declared `pixel_count_source: observed_max` equal
+    the largest positions. A grid need not be fully sampled, so smaller positions are fine otherwise.
+    Self-gates on valid counts (their absence or shape is imaging_grid's finding). DATA_SCAN."""
+    if not _imaging(ar): return
+    f = _positions_file(ar)
+    if f is None: return
+    sev, largest = rule.get("severity", "error"), {}              # axis -> (largest set position, column)
+    for path, typ in ar.fields(f).items():
+        axis = next((a for a in "xyz" if _pos(path, a)), None)
+        if axis is None or arrow_logical(typ) not in ("int", "uint", "float", "double"):
+            continue
+        for (arr,) in ar.iter_batches(f, path):
+            m = pc.max(arr).as_py()
+            if m is not None and (axis not in largest or m > largest[axis][0]):
+                largest[axis] = (m, path)
+    limits = {}                                                   # axis -> {count: where it is declared}
+    grids = [(s.get("id"), ps) for s, ps in ((s, _ss_params(s)) for s in _scan_settings(ar))
+             if all(a in ps for a in _IMS_PIXEL_COUNTS)]
+    if len(grids) == 1:
+        sid, ps = grids[0]
+        for axis, acc in zip("xy", _IMS_PIXEL_COUNTS):
+            n = _count(ps[acc].get("value"))
+            if n is not None:
+                limits.setdefault(axis, {})[n] = f"{acc} ({ps[acc].get('name')}) of scan settings '{sid}'"
+    im = _dig(ar.index or {}, "metadata.imaging")
+    im = im if isinstance(im, dict) else {}
+    block = im.get("pixel_count")
+    block = {a: _count(block.get(a)) for a in "xyz"} if isinstance(block, dict) else {}
+    for axis, n in block.items():
+        if n is not None:
+            limits.setdefault(axis, {}).setdefault(n, f"metadata.imaging.pixel_count.{axis}")
+    for axis, (m, path) in sorted(largest.items()):
+        for n, where in sorted(limits.get(axis, {}).items()):
+            if m > n:
+                rep.add(rule, sev, f"{f}.{path}: largest position {m} lies beyond {where} = {n} — every "
+                        f"position is an index into the declared pixel grid", {"file": f, "column": path})
+        n = block.get(axis)
+        if im.get("pixel_count_source") == "observed_max" and n is not None and m < n:
+            rep.add(rule, sev, f"metadata.imaging.pixel_count.{axis} = {n} with pixel_count_source "
+                    f"'observed_max', but the largest {path} in {f} is {m} — observed counts equal the "
+                    f"largest positions", {"file": f, "column": path})
+
+def p_cv_uri_form(ar, rule, rep, params):
+    """Imaging profile check 6 (spec PR #25, Vocabulary): metadata.cv_list declares the vocabulary
+    params.cv and every such entry's `uri` matches params.pattern in full (params.form is the form
+    shown in messages) — for IMS, which publishes no releases, a raw URL naming a 40-character commit.
+    A uri on a branch (refs/heads/<name>, master, main) is named as such. params.require_imaging gates
+    the rule on imaging archives. Index-only."""
+    if params.get("require_imaging") and not _imaging(ar): return
+    sev, cv, form = rule.get("severity", "error"), params["cv"], params.get("form", params["pattern"])
+    cvl = _dig(ar.index or {}, params.get("list", "metadata.cv_list"))
+    entries = [e for e in (cvl if isinstance(cvl, list) else []) if isinstance(e, dict) and e.get("id") == cv]
+    if not entries:
+        rep.add(rule, sev, f"metadata.cv_list does not declare {cv} — it MUST be declared, with a uri of the "
+                f"form {form}")
+    for e in entries:
+        uri = e.get("uri")
+        if isinstance(uri, str) and re.fullmatch(params["pattern"], uri):
+            continue
+        branch = re.search(r"/(refs/heads/[^/]+|master|main)/", uri) if isinstance(uri, str) else None
+        why = f"names the branch '{branch.group(1)}', not a commit" if branch else "does not name a commit"
+        rep.add(rule, sev, f"metadata.cv_list: the {cv} uri {uri!r} {why} — it MUST have the form {form}")
 
 # --- raw archive-member primitives (embedded optical images: metadata.imaging.images[]) ---
 TIFF_MAGIC = (b"II*\x00", b"MM\x00*")            # little/big-endian baseline TIFF (and BigTIFF shares II*/MM* prefixes)
@@ -2310,13 +2432,15 @@ PRIMITIVES = {
     "member_checksum": p_member_checksum, "cv_terms_exist": p_cv_terms_exist,
     "imaging_marker": p_imaging_marker, "imaging_position_pairs": p_imaging_position_pairs,
     "imaging_grid": p_imaging_grid, "image_index_entry": p_image_index_entry,
+    "imaging_position_columns": p_imaging_position_columns, "imaging_position_bounds": p_imaging_position_bounds,
+    "imaging_preferred_unit": p_imaging_preferred_unit, "cv_uri_form": p_cv_uri_form,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap.
 # member_checksum and cv_terms_exist are not listed: they limit their own reads under --quick.
 DATA_SCAN = {"column_predicate", "grouped_monotonic", "foreign_key", "index_contiguous",
              "count_sum_equals_rows", "blob_hash", "grouped_count_equals", "imaging_coordinates",
              "chunk_bounds", "aux_arrays", "column_not_all_null", "count_implies_rows",
-             "imaging_position_pairs"}
+             "imaging_position_pairs", "imaging_position_bounds"}
 
 # -------------------------------------------------------------------------------- profile cache
 @functools.lru_cache(maxsize=8)
@@ -2384,7 +2508,7 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
             elif prim in ("cv_mapping", "cv_mapping_json"):
                 params["_mapping"] = prof.mappings.get(params.get("mapping_file"))
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
-            elif prim == "imaging_grid":
+            elif prim in ("imaging_grid", "imaging_preferred_unit"):
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
             elif prim == "cv_list_consistency":
                 params["_cv_versions"] = rep.cv_versions
