@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.17"
+CATALOG_VERSION = "1.18"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1678,6 +1678,15 @@ def p_imaging_preferred_unit(ar, rule, rep, params):
                         f"({ps[acc].get('name')}) = {ps[acc].get('value')!r} is written in {unit}, a unit of "
                         f"length other than micrometre — the imaging profile recommends {want}")
 
+def _column_mappings(ar, f):
+    """The column_mapping entries (dicts) in the files[] entry of table `f` — the index names the
+    member by file name, so `f` is resolved first; [] when the entry or its block is absent or malformed."""
+    fname = ar._fname(f)
+    files = ar.index.get("files") if isinstance(ar.index, dict) else None
+    entry = next((fe for fe in files or [] if isinstance(fe, dict) and fe.get("name") == fname), {})
+    mappings = entry.get("column_mapping")
+    return [m for m in mappings if isinstance(m, dict)] if isinstance(mappings, list) else []
+
 def p_imaging_position_columns(ar, rule, rep, params):
     """Imaging profile checks 2-3, the declaration half (spec PR #25, Pixel positions): every pixel
     position column is an integer column and has a column-mapping entry, in the files[] entry of its
@@ -1688,9 +1697,7 @@ def p_imaging_position_columns(ar, rule, rep, params):
     f = _positions_file(ar)
     if f is None: return                          # no position column at all is imaging_coordinates' finding
     sev, terms, fname = rule.get("severity", "error"), params.get("terms") or {}, ar._fname(f)
-    entry = next((fe for fe in (ar.index or {}).get("files") or []
-                  if isinstance(fe, dict) and fe.get("name") == fname), {})
-    mappings = [m for m in entry.get("column_mapping") or [] if isinstance(m, dict)]
+    mappings = _column_mappings(ar, f)
     for path, typ in ar.fields(f).items():
         axis = next((a for a in terms if _pos(path, a)), None)
         if axis is None: continue
@@ -1916,8 +1923,13 @@ def p_cv_mapping(ar, rule, rep, params):
     """CV term-placement over the packed Parquet facets (PSI CvMapping model, mzPeak port — see
     docs/cv-mapping-design.md). Consumes a bundled CvMapping file (params._mapping = the spec's
     table_rules.json / imaging rules); for each rule, maps scope_path -> an mzPeak facet (params.path_map),
-    gathers the accessions inflected into that facet's column names, and checks them with _cvmap_eval.
-    Schema-only (no row decode) -> runs under --quick. MUST emits at this rule's severity; SHOULD ->
+    gathers the accessions the facet's columns carry, and checks them with _cvmap_eval. A column carries
+    a term in one of two ways: inflected into its name (scan.IMS_1000050_position_x), or through a
+    column_mapping entry in the files[] entry of the table (path scan.position_x, accession IMS:1000050
+    — how the imaging profile's position_x / position_y carry theirs). A mapping counts only when its
+    path lies inside the facet and resolves to a column of the Parquet schema, so an entry that points
+    at an absent column declares nothing (column_mapping reports the dangling path).
+    Schema + index only (no row decode) -> runs under --quick. MUST emits at this rule's severity; SHOULD ->
     warning; MAY skipped (Phase 1). Self-gates on an unmapped scope_path or an absent file/facet."""
     mapping = params.get("_mapping")
     if not mapping:
@@ -1941,6 +1953,12 @@ def p_cv_mapping(ar, rule, rep, params):
             continue                              # facet absent in this archive -> skip
         present = {f"{code}:{num}" for path in fields if path.startswith(facet + ".")
                    for code, num in _cv_refs(path.split(".")[-1])}
+        schema = ar.pf(f).schema_arrow
+        for m in _column_mappings(ar, f):         # terms declared by column mapping rather than by name
+            path, acc = m.get("path"), m.get("accession")
+            if (isinstance(path, str) and isinstance(acc, str) and path.startswith(facet + ".")
+                    and _resolve_path(schema, path) is not None):
+                present.add(acc)
         emit = sev_must if cr.get("requirement_level") == "MUST" else "warning"
         _cvmap_eval(cr, present, isa, rule, rep, emit, f"{f} [{facet}]", {"file": f, "facet": facet})
 

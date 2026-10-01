@@ -480,7 +480,7 @@ def build_all(out_root):
     # 2-3: a position column without its column mapping, mapped to another axis' term, or not an integer
     # column; an earlier draft's column name is held to the same and warned about
     case("fail", "imaging_position_unmapped", imeta, idata, "FAIL", "imaging_position_columns",
-         imaging=img, extra_metadata=_grid(), column_mapping=[])
+         warn="cv_term_placement_imaging", imaging=img, extra_metadata=_grid(), column_mapping=[])
     swapped = [{**m, "accession": a} for m, a in zip(_position_mappings(["position_x", "position_y"]),
                                                      ("IMS:1000051", "IMS:1000050"))]
     case("fail", "imaging_position_wrong_term", imeta, idata, "FAIL", "imaging_position_columns",
@@ -498,6 +498,19 @@ def build_all(out_root):
     stage = {"stage_position_x": pa.array([-1250.5, 0.0, 1250.5], pa.float64())}
     case("pass", "imaging_other_position_column", _meta(coords=True, extra_scan=stage), idata, "PASS",
          quiet="imaging_position_columns", imaging=img, extra_metadata=_grid())
+    # catalog 1.18: CV term placement reads the column mappings too. The scan facet carries IMS:1000050 and
+    # IMS:1000051 through the mappings of position_x / position_y (catalog 1.8-1.17 read inflected column
+    # names only and warned on every packed imaging archive that used the profile's names). Still a
+    # warning: no mapping (imaging_position_unmapped above), both columns mapped to one term, and
+    # mappings that point at columns the facet does not have
+    case("pass", "imaging_cv_placement_mapped", imeta, idata, "PASS", quiet="cv_term_placement_imaging",
+         imaging=img, extra_metadata=_grid())
+    both_y = [{**m, "accession": "IMS:1000051"} for m in _position_mappings(["position_x", "position_y"])]
+    case("fail", "imaging_cv_placement_one_term", imeta, idata, "FAIL", "imaging_position_columns",
+         warn="cv_term_placement_imaging", imaging=img, extra_metadata=_grid(), column_mapping=both_y)
+    case("fail", "imaging_cv_placement_absent_column", _meta(), idata, "FAIL", "imaging_coordinates_1based",
+         warn="cv_term_placement_imaging", imaging=img, extra_metadata=_grid(),
+         column_mapping=_position_mappings(["position_x", "position_y"]))
     # 6: the IMS cv_list entry names a commit; a uri on a branch, or no IMS entry at all
     on_branch = [c if c["id"] != "IMS" else {**c, "uri": IMS_URI.replace(IMS_URI.split("/")[5], "refs/heads/master")}
                  for c in _CV_LIST]
