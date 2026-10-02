@@ -81,7 +81,7 @@ except ImportError:                                             # jsonschema < 4
             schema, resolver=jsonschema.RefResolver("", schema, store=store),
             format_checker=_get_fc())
 
-CATALOG_VERSION = "1.18"
+CATALOG_VERSION = "1.19"
 _LARGE_MEMBER = 32 * 1024 * 1024   # 32 MB: ZIP members above this are extracted to a temp file on
                                     # first data access; the mmap-backed _LocalZipMemberFile is kept
                                     # for footer-only reads (--quick) so no extraction happens there.         # 1.1: image primitives; 1.2: list types + footer count_column; 1.3: grouped_monotonic gated on declared sorting_rank; 1.4: json_schema + grouped_count_equals; 1.5: cv_list cv-CURIE resolution; 1.6: cv_list version warning fires only when declared CV is NEWER than the pinned snapshot (update-needed), not on any difference; 1.7: parquet_row_group_health (advisory perf warning: chunked data facet in one monolithic row group); 1.8: cv_mapping (PSI CvMapping term-placement, MUST/SHOULD/AND/OR/XOR + allow_children + cardinality; consumes the spec's table_rules.json; advisory severity in Phase 1) + finding 'fix' tips; 1.9: cv_mapping_json (CvMapping placement over the JSON index metadata — wires the spec's semantic_rules.json: file_description/instrument-config/software/data_processing params); 1.10: Phase 3 chunk layout (chunk_columns, chunk_bounds = start<=end + non-overlapping ascending chunks per group, aux_arrays count) + Phase 6 container MUSTs (zip_stored uncompressed members, column_order key-first) + Phase 4 chromatogram entity rules; 1.11: column_not_all_null (a required column present but entirely null), count_implies_rows (sum of a count column > 0 iff the data facet has rows)
@@ -1757,6 +1757,90 @@ def p_imaging_position_bounds(ar, rule, rep, params):
                 rep.add(rule, sev, f"{f}.{path}: largest position {m} lies beyond {where} = {n} — every "
                         f"position is an index into the declared pixel grid", {"file": f, "column": path})
 
+def p_imaging_mz_range(ar, rule, rep, params):
+    """Imaging profile check 7, the m/z half (spec PR #25, owner decision D10 settled 2026-10-02 in
+    mzpeak-convert 0.17.1): metadata.imaging.mz_range, when present, is the object {min, max} over
+    the archive's positioned MS1 spectra, and the numbers are the range of the STORED m/z arrays.
+    Shape check is index-only (runs under --quick; catches 0.17.0's [min, max] array); the value
+    check scans spectra_data / spectra_peaks and is skipped under --quick. Self-gates: no mz_range
+    key -> skip (the key is legitimately absent when no positioned MS1 spectrum holds an m/z)."""
+    if not _imaging(ar): return
+    mr = _dict(_dict((ar.index or {}).get("metadata")).get("imaging")).get("mz_range")
+    if mr is None: return
+    sev = rule.get("severity", "warning")
+    if (not isinstance(mr, dict) or isinstance(mr.get("min"), bool) or isinstance(mr.get("max"), bool)
+            or not isinstance(mr.get("min"), (int, float)) or not isinstance(mr.get("max"), (int, float))):
+        rep.add(rule, sev, f"metadata.imaging.mz_range is {json.dumps(mr)[:80]} — the imaging profile "
+                'defines the object {"min": ..., "max": ...} (mzpeak-convert 0.17.0 wrote an array)')
+        return
+    lo, hi = float(mr["min"]), float(mr["max"])
+    if not (np.isfinite(lo) and np.isfinite(hi)) or lo > hi:
+        rep.add(rule, sev, f"metadata.imaging.mz_range min={lo:g} max={hi:g} is not a finite ascending range")
+        return
+    if params.get("_quick"): return
+    # Eligible spectra: positioned (a scan row sets position_x) AND held at ms_level 1.
+    # A missing positions file / ms_level column degrades that side of the filter to "all spectra".
+    def _indices_where(f, val_col, key_col, keep):
+        out = set()
+        for v, k in ar.iter_batches(f, val_col, key_col):
+            kv = k.to_numpy(zero_copy_only=False)
+            for i in np.nonzero(keep(v))[0]:
+                out.add(int(kv[i]))
+        return out
+    positioned = ms1 = None
+    fp = _positions_file(ar)
+    if fp is not None:
+        fields = ar.fields(fp)
+        xs = [k for k in fields if _pos(k, "x")]
+        src = next((k for k in fields if k.rsplit(".", 1)[-1] == "source_index"), None)
+        if xs and src:
+            positioned = _indices_where(fp, xs[0], src,
+                                        lambda v: ~pc.is_null(v).to_numpy(zero_copy_only=False))
+    for f, lvl, idx in (("spectra_metadata", "spectrum.MS_1000511_ms_level", "spectrum.index"),
+                        ("spectra_metadata", "ms_level", "index")):
+        if ar.has_file(f) and lvl in ar.fields(f) and idx in ar.fields(f):
+            ms1 = _indices_where(f, lvl, idx,
+                                 lambda v: pc.fill_null(pc.equal(v.cast(pa.int64(), safe=False), 1), False)
+                                           .to_numpy(zero_copy_only=False))
+            break
+    eligible = None
+    for s in (positioned, ms1):
+        if s is not None:
+            eligible = s if eligible is None else (eligible & s)
+    if eligible is not None and not eligible:
+        rep.add(rule, sev, "metadata.imaging.mz_range is present but the archive holds no positioned "
+                "MS1 spectrum — the profile leaves the key out in that case")
+        return
+    elig_arr = np.array(sorted(eligible), dtype=np.int64) if eligible is not None else None
+    actual_lo, actual_hi = np.inf, -np.inf
+    for f in ("spectra_data", "spectra_peaks"):
+        if not ar.has_file(f): continue
+        fields = ar.fields(f)
+        if "point.mz" in fields:
+            cols = ("point.spectrum_index", "point.mz", "point.mz")
+        elif "chunk.mz_chunk_start" in fields and "chunk.mz_chunk_end" in fields:
+            cols = ("chunk.spectrum_index", "chunk.mz_chunk_start", "chunk.mz_chunk_end")
+        else:
+            continue                   # numpress-only / no m/z representation here
+        for sidx, start, end in ar.iter_batches(f, *cols):
+            sv = pc.fill_null(sidx.cast(pa.int64(), safe=False), -1).to_numpy(zero_copy_only=False)
+            keep = np.isin(sv, elig_arr) if elig_arr is not None else np.ones(len(sv), bool)
+            if not keep.any(): continue
+            a = start.to_numpy(zero_copy_only=False).astype(float)[keep]
+            b = end.to_numpy(zero_copy_only=False).astype(float)[keep]
+            a, b = a[np.isfinite(a)], b[np.isfinite(b)]
+            if len(a): actual_lo = min(actual_lo, float(a.min()))
+            if len(b): actual_hi = max(actual_hi, float(b.max()))
+    if not np.isfinite(actual_lo):
+        rep.add(rule, sev, "metadata.imaging.mz_range is declared but the data facets hold no m/z "
+                "for the positioned MS1 spectra")
+        return
+    tol = lambda d, r: abs(d) > 1e-9 + 1e-9 * abs(r)
+    if tol(actual_lo - lo, lo) or tol(actual_hi - hi, hi):
+        rep.add(rule, sev, f"metadata.imaging.mz_range declares [{lo:g}, {hi:g}] but the stored m/z "
+                f"of the positioned MS1 spectra spans [{actual_lo:g}, {actual_hi:g}] (D10: the range "
+                f"of the stored arrays)", recovery="rederive")
+
 def p_cv_uri_form(ar, rule, rep, params):
     """Imaging profile check 6 (spec PR #25, Vocabulary): metadata.cv_list declares the vocabulary
     params.cv and every such entry's `uri` matches params.pattern in full (params.form is the form
@@ -2471,6 +2555,7 @@ PRIMITIVES = {
     "imaging_grid": p_imaging_grid, "image_index_entry": p_image_index_entry,
     "imaging_position_columns": p_imaging_position_columns, "imaging_position_bounds": p_imaging_position_bounds,
     "imaging_preferred_unit": p_imaging_preferred_unit, "cv_uri_form": p_cv_uri_form,
+    "imaging_mz_range": p_imaging_mz_range,
 }
 # blob_hash reads whole image members -> treat as a data scan (skipped by --quick); member_exists/tiff_magic are cheap.
 # member_checksum and cv_terms_exist are not listed: they limit their own reads under --quick.
@@ -2536,7 +2621,8 @@ def run(archive_path, profile=None, profiles_root=PROFILES_ROOT, quick=False, me
                 params["_schema"] = prof.json_schemas.get(params.get("schema"))
                 params["_schema_store"] = prof._json_schema_store
                 params["_cv_isa"] = getattr(prof, "cv_isa", {})
-            elif prim in ("footer_count_equals_rows", "footer_equals_points_in_file", "member_checksum"):
+            elif prim in ("footer_count_equals_rows", "footer_equals_points_in_file", "member_checksum",
+                          "imaging_mz_range"):
                 params["_quick"] = quick
             elif prim == "column_mapping":
                 params["_quick"] = quick

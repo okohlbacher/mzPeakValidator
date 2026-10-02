@@ -48,6 +48,19 @@
         },
         "run": {
           "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/ms_run.json"
+        },
+        "scan_settings_list": {
+          "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/scan_settings_list.json"
+        },
+        "imaging": {
+          "type": "object",
+          "description": "Imaging metadata. An archive follows the Imaging profile when `is_imaging` is true.",
+          "properties": {
+            "is_imaging": {
+              "type": "boolean",
+              "description": "True when the archive follows the Imaging profile."
+            }
+          }
         }
       }
     }
@@ -101,6 +114,15 @@
             "$ref": "https://raw.githubusercontent.com/HUPO-PSI/mzPeak-specification/refs/heads/main/schema/param.json"
           },
           "description": "A list of parameters describing the file stored in the mzPeak archive itself"
+        },
+        "checksum": {
+          "type": ["string", "null"],
+          "description": "The 128 byte SHA-512 hex digest of the entire file, excluding any ZIP-related headers or padding, rendered without byte separators and all alphabetic characters lowercase.",
+          "examples": [
+            "b3350bbd8ff55e3aca1f3e3b0e20da79b8ffcf7a8a0de1dad09b51fc7ad6c01dcd6179e76d7dd06a1a6d7162edd3e2d0be790b2b9bb35b7bd4113952b7fe665d",
+            "44655c4a48320cb90ad366690857543e4882059730f6cc364d6500ff02c1b43b918364bbcae25d99c99c7b4366b0d184a7e2f50fea8632a0d44e90ccff03f46d",
+            "314da0d112ed0cb150b140af703951f5c8ca4a08725c0bcc7bd5b58e9031f707767c3035debb3284e4e53fc1a4fff7592be132bc55394e284132bf223be507c4"
+          ]
         }
       }
     },
@@ -129,6 +151,7 @@
           "type": ["string", "null"],
           "description": "The CURIE for the controlled vocabulary term, or null if no controlled vocabulary term is available. Null may be used to indicate that a column has a human readable name but does not map to a controlled vocabulary term",
           "pattern": "\\S+:\\S+",
+          "format": "curie",
           "default": null
         },
         "unit": {
@@ -138,7 +161,7 @@
         "term_marker": {
           "type": "boolean",
           "default": false,
-          "description": "Whether this column is marks the presence/absence of a specific value-less controlled vocabulary term, true when the term is present in the row, false or null otherwise."
+          "description": "Whether this column is marks the presence/absence of a specific value-less controlled vocabulary term or subtree. When the column is a string, the value MUST be a CURIE for a child of this mapping's accession. When the column is boolean true when the term is present in the row, false or null otherwise."
         }
       }
     }

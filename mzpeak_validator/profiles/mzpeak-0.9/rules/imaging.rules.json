@@ -1,75 +1,171 @@
 {
-  "about": {
-    "file": "imaging.rules.json",
-    "axis": "imaging",
-    "purpose": "Checks that apply only to MS-imaging archives: the imaging marker, the pixel position columns (integer, mapped to their terms, 1-based, paired, inside the declared grid), the pixel grid in the scan settings, the commit-pinned imaging vocabulary, and integrity of any embedded optical images (members described in metadata.imaging.images[] and listed in files[]).",
-    "applies_to": "imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata / spectra_metadata_scans column is position_x (or an earlier draft's IMS_1000050_position_x / opt_IMS_1000050_position_x). A position column is one by its full name: a column that only ends the same way (stage_position_x) is not a pixel position and is left alone by every rule here. The coordinate, position and grid rules self-gate on that; imaging_marker runs on every archive (positions without the marker are its finding); the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).",
-    "spec_basis": "The imaging profile of HUPO-PSI/mzPeak-specification PR #25 (docs/profiles/imaging.md at 4861c9d), 'What a validator checks' 1-8; earlier imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8. Image problems stay WARNINGs (the profile: a mismatch is a warning; images are outside the fidelity levels), and so does a length written in a unit other than micrometre (a SHOULD). Not checked: mz_range against the data (check 7; whether it describes the source or the stored arrays is open on PR #25), metadata.imaging fields the profile does not define (pixel_size_um), and pixel_count_source — the profile defines the field but no check on it, and an archive filtered from an observed_max archive keeps the source grid, so counts above the largest position are valid under either value.",
-    "how_to_amend": "The image rules are data-driven via params: change 'list' to point at a different array in the index, or the field names (member/hash_field/size_field/media_type_field) to match a different metadata shape. To make image problems hard errors, change severity to 'error'. 'about'/'doc' are ignored by the engine.",
-    "primitives": {
-      "imaging_coordinates": "no params. If imaging, requires position_x AND position_y columns (or the older IMS_1000050_position_x / IMS_1000051_position_y) (checked independently) and that the minimum set value of position_x, position_y and, when present, position_z is >= 1 (1-based).",
-      "imaging_position_pairs": "no params. If imaging, streams position_x and position_y together: a row that sets exactly one of them -> finding (first row named); no row that sets both -> finding. DATA_SCAN.",
-      "imaging_marker": "no params. Runs on every archive: a table carrying position columns while metadata.imaging.is_imaging is not true -> finding; metadata.imaging.coordinate_base present and not 1 -> finding. Index + schema only.",
-      "imaging_grid": "no params. The engine injects the CV is_a graph. If imaging, reads metadata.scan_settings_list (else the spectra_metadata footer copy): the number of entries carrying both IMS:1000042 and IMS:1000043 must be exactly 1, and in that entry each value must be an integer >= 1; every IMS:1000044/45/46/47/53/54 parameter of any entry must carry a unit descending from UO:0000001 (length unit); metadata.imaging.pixel_count.x/.y, when present, must equal the two counts. Index-only.",
-      "imaging_position_columns": "params: terms ({axis: accession}, e.g. {x: IMS:1000050}). If imaging, for every position column of the scan table (axis matched by the full column name: position_<axis>, or an earlier draft's IMS_10000NN_position_<axis> / opt_IMS_10000NN_position_<axis>): its type must be an integer type; the table's files[] entry must carry a column_mapping entry whose path is the column (scan.position_x in the packed layout) and whose accession is the axis' term; a column not literally named position_<axis> (an earlier draft's IMS_1000050_position_x / opt_ name) additionally gets a WARNING, whatever the rule severity. Index + schema only.",
-      "imaging_position_bounds": "no params. If imaging, streams every position column for its largest set value and compares per axis with the declared counts: IMS:1000042 (x) / IMS:1000043 (y) of the single scan-settings entry carrying both, and metadata.imaging.pixel_count.x/.y/.z; largest > count -> finding. largest < count is never a finding, whatever metadata.imaging.pixel_count_source says (a grid need not be fully sampled; a filtered archive keeps its source's counts). Counts that are absent or not integers >= 1 are skipped (imaging_grid reports them). DATA_SCAN.",
-      "imaging_preferred_unit": "params: terms (accessions of scan-settings parameters), unit (the recommended unit, default UO:0000017). The engine injects the CV is_a graph. If imaging, each listed parameter of any scan-settings entry whose unit is a length unit (UO:0000001 descendant) other than `unit` -> finding. A missing or non-length unit is imaging_grid's. Index-only.",
-      "cv_uri_form": "params: cv (the cv_list id), pattern (regular expression the uri must match in full), form (the form as shown in messages), [list] (default metadata.cv_list), [require_imaging]. No entry with that id -> finding; each entry whose uri does not match -> finding, naming the branch when the uri contains /refs/heads/<name>/, /master/ or /main/, and saying so when the uri does contain a 40-character hash but in another form (http, a fork, github.com/blob). Index-only.",
-      "image_index_entry": "params: list, member, entity_type, data_kind. Each declared image member present in the archive must be listed in mzpeak_index.json files[] with the given entity_type and data_kind; unlisted or listed differently -> finding. Absent members are member_exists' finding.",
-      "member_exists": "params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.",
-      "blob_hash": "params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.",
-      "tiff_magic": "params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\\0 little-endian or MM\\0* big-endian)."
-    }
+ "about": {
+  "file": "imaging.rules.json",
+  "axis": "imaging",
+  "purpose": "Checks that apply only to MS-imaging archives: the imaging marker, the pixel position columns (integer, mapped to their terms, 1-based, paired, inside the declared grid), the pixel grid in the scan settings, the commit-pinned imaging vocabulary, and integrity of any embedded optical images (members described in metadata.imaging.images[] and listed in files[]).",
+  "applies_to": "imaging archives only. An archive is 'imaging' when metadata.imaging.is_imaging is true OR a spectra_metadata / spectra_metadata_scans column is position_x (or an earlier draft's IMS_1000050_position_x / opt_IMS_1000050_position_x). A position column is one by its full name: a column that only ends the same way (stage_position_x) is not a pixel position and is left alone by every rule here. The coordinate, position and grid rules self-gate on that; imaging_marker runs on every archive (positions without the marker are its finding); the image rules self-gate on the presence of metadata.imaging.images[] (no images[] -> they no-op).",
+  "spec_basis": "The imaging profile of HUPO-PSI/mzPeak-specification PR #25 (docs/profiles/imaging.md at 4861c9d), 'What a validator checks' 1-8; earlier imzML2mzPeak docs/mzpeak-imaging-spec-suggestions.md, Edits 6-8. Image problems stay WARNINGs (the profile: a mismatch is a warning; images are outside the fidelity levels), and so does a length written in a unit other than micrometre (a SHOULD). Since catalog 1.19 mz_range IS checked against the data (check 7): owner decision D10 (mzpeak-convert 0.17.1, 2026-10-02) settled it as the object {min, max} over the positioned MS1 spectra, the numbers being the range of the STORED m/z arrays. Not checked: metadata.imaging fields the profile does not define (pixel_size_um), and pixel_count_source \u2014 the profile defines the field but no check on it, and an archive filtered from an observed_max archive keeps the source grid, so counts above the largest position are valid under either value.",
+  "how_to_amend": "The image rules are data-driven via params: change 'list' to point at a different array in the index, or the field names (member/hash_field/size_field/media_type_field) to match a different metadata shape. To make image problems hard errors, change severity to 'error'. 'about'/'doc' are ignored by the engine.",
+  "primitives": {
+   "imaging_coordinates": "no params. If imaging, requires position_x AND position_y columns (or the older IMS_1000050_position_x / IMS_1000051_position_y) (checked independently) and that the minimum set value of position_x, position_y and, when present, position_z is >= 1 (1-based).",
+   "imaging_position_pairs": "no params. If imaging, streams position_x and position_y together: a row that sets exactly one of them -> finding (first row named); no row that sets both -> finding. DATA_SCAN.",
+   "imaging_marker": "no params. Runs on every archive: a table carrying position columns while metadata.imaging.is_imaging is not true -> finding; metadata.imaging.coordinate_base present and not 1 -> finding. Index + schema only.",
+   "imaging_grid": "no params. The engine injects the CV is_a graph. If imaging, reads metadata.scan_settings_list (else the spectra_metadata footer copy): the number of entries carrying both IMS:1000042 and IMS:1000043 must be exactly 1, and in that entry each value must be an integer >= 1; every IMS:1000044/45/46/47/53/54 parameter of any entry must carry a unit descending from UO:0000001 (length unit); metadata.imaging.pixel_count.x/.y, when present, must equal the two counts. Index-only.",
+   "imaging_position_columns": "params: terms ({axis: accession}, e.g. {x: IMS:1000050}). If imaging, for every position column of the scan table (axis matched by the full column name: position_<axis>, or an earlier draft's IMS_10000NN_position_<axis> / opt_IMS_10000NN_position_<axis>): its type must be an integer type; the table's files[] entry must carry a column_mapping entry whose path is the column (scan.position_x in the packed layout) and whose accession is the axis' term; a column not literally named position_<axis> (an earlier draft's IMS_1000050_position_x / opt_ name) additionally gets a WARNING, whatever the rule severity. Index + schema only.",
+   "imaging_position_bounds": "no params. If imaging, streams every position column for its largest set value and compares per axis with the declared counts: IMS:1000042 (x) / IMS:1000043 (y) of the single scan-settings entry carrying both, and metadata.imaging.pixel_count.x/.y/.z; largest > count -> finding. largest < count is never a finding, whatever metadata.imaging.pixel_count_source says (a grid need not be fully sampled; a filtered archive keeps its source's counts). Counts that are absent or not integers >= 1 are skipped (imaging_grid reports them). DATA_SCAN.",
+   "imaging_preferred_unit": "params: terms (accessions of scan-settings parameters), unit (the recommended unit, default UO:0000017). The engine injects the CV is_a graph. If imaging, each listed parameter of any scan-settings entry whose unit is a length unit (UO:0000001 descendant) other than `unit` -> finding. A missing or non-length unit is imaging_grid's. Index-only.",
+   "cv_uri_form": "params: cv (the cv_list id), pattern (regular expression the uri must match in full), form (the form as shown in messages), [list] (default metadata.cv_list), [require_imaging]. No entry with that id -> finding; each entry whose uri does not match -> finding, naming the branch when the uri contains /refs/heads/<name>/, /master/ or /main/, and saying so when the uri does contain a 40-character hash but in another form (http, a fork, github.com/blob). Index-only.",
+   "image_index_entry": "params: list, member, entity_type, data_kind. Each declared image member present in the archive must be listed in mzpeak_index.json files[] with the given entity_type and data_kind; unlisted or listed differently -> finding. Absent members are member_exists' finding.",
+   "member_exists": "params: list (dotted path to an array in mzpeak_index.json), member (field holding the archive member name). Each entry's member must be a present archive member.",
+   "blob_hash": "params: list, member, algo (e.g. sha256), hash_field, size_field. For each present member, recompute the digest and compare to hash_field; also compare byte length to size_field. Missing members are left to member_exists.",
+   "tiff_magic": "params: list, member, media_type_field, media_type. A member declared as media_type (default image/tiff), or named *.tif/*.tiff if no media_type, must start with a TIFF magic number (II*\\0 little-endian or MM\\0* big-endian).",
+   "imaging_mz_range": "no params. If imaging and metadata.imaging.mz_range is present: the key must be the object {min, max} with a finite ascending range (index-only, runs under --quick; catches mzpeak-convert 0.17.0's [min, max] array), and the numbers must equal the m/z range of the STORED arrays (point.mz, or the chunk m/z bounds) of the positioned MS1 spectra \u2014 positioned = a scan row sets position_x, MS1 = ms_level 1 as held; either filter degrades to all spectra when its column is absent. Value check is a data scan, skipped under --quick. Absent key -> skip."
+  }
+ },
+ "rules": [
+  {
+   "id": "imaging_marker",
+   "primitive": "imaging_marker",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Imaging profile check 1: an archive that carries pixel positions MUST set metadata.imaging.is_imaging to true, and coordinate_base, if present, is 1. The converse, a marker without position columns (review 2026-09-30 B9/B10), is imaging_coordinates_1based's finding. recovery=rederive: the marker follows from the position columns.",
+   "params": {}
   },
-  "rules": [
-    {"id": "imaging_marker", "primitive": "imaging_marker", "severity": "error", "recovery": "rederive",
-     "doc": "Imaging profile check 1: an archive that carries pixel positions MUST set metadata.imaging.is_imaging to true, and coordinate_base, if present, is 1. The converse, a marker without position columns (review 2026-09-30 B9/B10), is imaging_coordinates_1based's finding. recovery=rederive: the marker follows from the position columns.",
-     "params": {}},
-
-    {"id": "imaging_coordinates_1based", "primitive": "imaging_coordinates", "severity": "error", "recovery": "none",
-     "doc": "Imaging archives carry both position_x and position_y, and every set position_x/_y/_z is >= 1 (profile checks 2-3: positions are indices into the pixel grid counted from 1). The deliberate offset from the 0-based spectrum.index is intentional. No params.",
-     "params": {}},
-
-    {"id": "imaging_positions_paired", "primitive": "imaging_position_pairs", "severity": "error", "recovery": "none",
-     "doc": "Imaging profile check 2: in each scan row position_x and position_y are both set (the scan belongs to a pixel) or both null (it belongs to none, e.g. a calibration scan), and at least one scan belongs to a pixel. Review 2026-09-30 B12: an unchecked UInt32 narrowing nulls one axis only.",
-     "params": {}},
-
-    {"id": "imaging_position_columns", "primitive": "imaging_position_columns", "severity": "error", "recovery": "rederive",
-     "doc": "Imaging profile checks 2-3: position_x, position_y and, when present, position_z are integer columns, each with a column mapping entry naming its term (IMS:1000050 / IMS:1000051 / IMS:1000052). A column under an earlier draft's name (IMS_1000050_position_x, opt_IMS_1000050_position_x; mzpeak-convert 0.15.0) is held to the same and gets a warning for the name: the profile's names are position_x / position_y / position_z, not opt_ names. The name stays a warning while archives written before the profile exist (catalog 1.16 accepted the names silently); whether it becomes an error is open. recovery=rederive: a missing mapping follows from the column (the type and name findings carry recovery none). Runs under --quick.",
-     "params": {"terms": {"x": "IMS:1000050", "y": "IMS:1000051", "z": "IMS:1000052"}}},
-
-    {"id": "imaging_positions_within_grid", "primitive": "imaging_position_bounds", "severity": "error", "recovery": "none",
-     "doc": "Imaging profile check 7 (pixel_count agrees with the data): no set position exceeds the declared pixel counts — IMS:1000042 / IMS:1000043 in the scan settings, metadata.imaging.pixel_count. A grid need not be fully sampled, so counts larger than the largest position are fine, also when pixel_count_source is 'observed_max': mzpeak-convert's filter lane (in.mzpeak --rt ...) keeps the source grid and that marker while the largest stored positions shrink. HUPO-PSI/mzPeak-specification#23 follow-up: counts lowered below the positions passed.",
-     "params": {}},
-
-    {"id": "imaging_ims_cv_pinned", "primitive": "cv_uri_form", "severity": "error", "recovery": "none",
-     "doc": "Imaging profile check 6: an imaging archive declares IMS in cv_list with a uri that names a commit, https://raw.githubusercontent.com/imzML/imzML/<40-character commit hash>/imagingMS.obo. The imaging vocabulary publishes no releases, so a uri on a branch (refs/heads/master, as mzpeak-convert 0.15.0 wrote) points at content that changes. recovery=none: the archive does not say which commit its writer used.",
-     "params": {"cv": "IMS", "require_imaging": true,
-                "pattern": "https://raw\\.githubusercontent\\.com/imzML/imzML/[0-9a-fA-F]{40}/imagingMS\\.obo",
-                "form": "https://raw.githubusercontent.com/imzML/imzML/<commit hash>/imagingMS.obo"}},
-
-    {"id": "imaging_grid_settings", "primitive": "imaging_grid", "severity": "error", "recovery": "none",
-     "doc": "Imaging profile checks 4, 5 and 7 (pixel_count against the scan settings): exactly one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; pixel size, max dimension and absolute position offset carry a unit of length; metadata.imaging.pixel_count equals the scan settings. Review 2026-09-30 B13: a second grid-bearing scanSettings could pass through.",
-     "params": {}},
-
-    {"id": "imaging_length_unit_micrometre", "primitive": "imaging_preferred_unit", "severity": "warning", "recovery": "none",
-     "doc": "Imaging profile, Grid geometry: pixel size, max dimension and absolute position offset SHOULD use micrometre (UO:0000017). Any unit of length is valid (imaging_grid_settings requires one), so another length unit is a WARNING — e.g. the centimetre accession UO:0000015 that imzML writers attach to micrometre values (HUPO-PSI/mzPeak-specification#23). Narrow 'terms' to IMS:1000046/IMS:1000047 to warn on pixel sizes only.",
-     "params": {"terms": ["IMS:1000044", "IMS:1000045", "IMS:1000046", "IMS:1000047", "IMS:1000053", "IMS:1000054"], "unit": "UO:0000017"}},
-
-    {"id": "image_member_present", "primitive": "member_exists", "severity": "warning", "recovery": "none",
-     "doc": "Every optical image declared in metadata.imaging.images[].archive_path is actually present in the archive. WARNING, not error: optical images are auxiliary. Amend 'list'/'member' if image bookkeeping moves elsewhere in the index.",
-     "params": {"list": "metadata.imaging.images", "member": "archive_path"}},
-
-    {"id": "image_blob_hash", "primitive": "blob_hash", "severity": "warning", "recovery": "recompute",
-     "doc": "A present image member's bytes match its declared sha256 and size_bytes. recovery=recompute: a stale digest is fixable without touching the image. Change 'algo' if a different hash is recorded; null/absent hash fields are skipped per entry.",
-     "params": {"list": "metadata.imaging.images", "member": "archive_path", "algo": "sha256", "hash_field": "sha256", "size_field": "size_bytes"}},
-
-    {"id": "image_tiff_magic", "primitive": "tiff_magic", "severity": "warning", "recovery": "none",
-     "doc": "An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type.",
-     "params": {"list": "metadata.imaging.images", "member": "archive_path", "media_type_field": "media_type", "media_type": "image/tiff"}},
-
-    {"id": "image_files_entry", "primitive": "image_index_entry", "severity": "warning", "recovery": "rederive",
-     "doc": "Imaging profile check 8: every image in metadata.imaging.images is listed in files[] with entity_type 'image' and data_kind 'other'. Review 2026-09-30 A3: the converter listed auto-discovered optical images as data_kind 'proprietary'. WARNING, as the profile says for image problems; the member's Core checksum is member_checksum_sha512's concern.",
-     "params": {"list": "metadata.imaging.images", "member": "archive_path", "entity_type": "image", "data_kind": "other"}}
-  ]
+  {
+   "id": "imaging_coordinates_1based",
+   "primitive": "imaging_coordinates",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Imaging archives carry both position_x and position_y, and every set position_x/_y/_z is >= 1 (profile checks 2-3: positions are indices into the pixel grid counted from 1). The deliberate offset from the 0-based spectrum.index is intentional. No params.",
+   "params": {}
+  },
+  {
+   "id": "imaging_positions_paired",
+   "primitive": "imaging_position_pairs",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Imaging profile check 2: in each scan row position_x and position_y are both set (the scan belongs to a pixel) or both null (it belongs to none, e.g. a calibration scan), and at least one scan belongs to a pixel. Review 2026-09-30 B12: an unchecked UInt32 narrowing nulls one axis only.",
+   "params": {}
+  },
+  {
+   "id": "imaging_position_columns",
+   "primitive": "imaging_position_columns",
+   "severity": "error",
+   "recovery": "rederive",
+   "doc": "Imaging profile checks 2-3: position_x, position_y and, when present, position_z are integer columns, each with a column mapping entry naming its term (IMS:1000050 / IMS:1000051 / IMS:1000052). A column under an earlier draft's name (IMS_1000050_position_x, opt_IMS_1000050_position_x; mzpeak-convert 0.15.0) is held to the same and gets a warning for the name: the profile's names are position_x / position_y / position_z, not opt_ names. The name stays a warning while archives written before the profile exist (catalog 1.16 accepted the names silently); whether it becomes an error is open. recovery=rederive: a missing mapping follows from the column (the type and name findings carry recovery none). Runs under --quick.",
+   "params": {
+    "terms": {
+     "x": "IMS:1000050",
+     "y": "IMS:1000051",
+     "z": "IMS:1000052"
+    }
+   }
+  },
+  {
+   "id": "imaging_positions_within_grid",
+   "primitive": "imaging_position_bounds",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Imaging profile check 7 (pixel_count agrees with the data): no set position exceeds the declared pixel counts \u2014 IMS:1000042 / IMS:1000043 in the scan settings, metadata.imaging.pixel_count. A grid need not be fully sampled, so counts larger than the largest position are fine, also when pixel_count_source is 'observed_max': mzpeak-convert's filter lane (in.mzpeak --rt ...) keeps the source grid and that marker while the largest stored positions shrink. HUPO-PSI/mzPeak-specification#23 follow-up: counts lowered below the positions passed.",
+   "params": {}
+  },
+  {
+   "id": "imaging_ims_cv_pinned",
+   "primitive": "cv_uri_form",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Imaging profile check 6: an imaging archive declares IMS in cv_list with a uri that names a commit, https://raw.githubusercontent.com/imzML/imzML/<40-character commit hash>/imagingMS.obo. The imaging vocabulary publishes no releases, so a uri on a branch (refs/heads/master, as mzpeak-convert 0.15.0 wrote) points at content that changes. recovery=none: the archive does not say which commit its writer used.",
+   "params": {
+    "cv": "IMS",
+    "require_imaging": true,
+    "pattern": "https://raw\\.githubusercontent\\.com/imzML/imzML/[0-9a-fA-F]{40}/imagingMS\\.obo",
+    "form": "https://raw.githubusercontent.com/imzML/imzML/<commit hash>/imagingMS.obo"
+   }
+  },
+  {
+   "id": "imaging_grid_settings",
+   "primitive": "imaging_grid",
+   "severity": "error",
+   "recovery": "none",
+   "doc": "Imaging profile checks 4, 5 and 7 (pixel_count against the scan settings): exactly one scan_settings_list entry carries IMS:1000042 and IMS:1000043, each an integer >= 1; pixel size, max dimension and absolute position offset carry a unit of length; metadata.imaging.pixel_count equals the scan settings. Review 2026-09-30 B13: a second grid-bearing scanSettings could pass through.",
+   "params": {}
+  },
+  {
+   "id": "imaging_length_unit_micrometre",
+   "primitive": "imaging_preferred_unit",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "Imaging profile, Grid geometry: pixel size, max dimension and absolute position offset SHOULD use micrometre (UO:0000017). Any unit of length is valid (imaging_grid_settings requires one), so another length unit is a WARNING \u2014 e.g. the centimetre accession UO:0000015 that imzML writers attach to micrometre values (HUPO-PSI/mzPeak-specification#23). Narrow 'terms' to IMS:1000046/IMS:1000047 to warn on pixel sizes only.",
+   "params": {
+    "terms": [
+     "IMS:1000044",
+     "IMS:1000045",
+     "IMS:1000046",
+     "IMS:1000047",
+     "IMS:1000053",
+     "IMS:1000054"
+    ],
+    "unit": "UO:0000017"
+   }
+  },
+  {
+   "id": "image_member_present",
+   "primitive": "member_exists",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "Every optical image declared in metadata.imaging.images[].archive_path is actually present in the archive. WARNING, not error: optical images are auxiliary. Amend 'list'/'member' if image bookkeeping moves elsewhere in the index.",
+   "params": {
+    "list": "metadata.imaging.images",
+    "member": "archive_path"
+   }
+  },
+  {
+   "id": "image_blob_hash",
+   "primitive": "blob_hash",
+   "severity": "warning",
+   "recovery": "recompute",
+   "doc": "A present image member's bytes match its declared sha256 and size_bytes. recovery=recompute: a stale digest is fixable without touching the image. Change 'algo' if a different hash is recorded; null/absent hash fields are skipped per entry.",
+   "params": {
+    "list": "metadata.imaging.images",
+    "member": "archive_path",
+    "algo": "sha256",
+    "hash_field": "sha256",
+    "size_field": "size_bytes"
+   }
+  },
+  {
+   "id": "image_tiff_magic",
+   "primitive": "tiff_magic",
+   "severity": "warning",
+   "recovery": "none",
+   "doc": "An image declared image/tiff really begins with a TIFF magic number (guards against a truncated/mislabelled blob). v0.5 optical images are TIFF-only; if other media types are later allowed, gate this rule by adjusting media_type or add sibling rules per type.",
+   "params": {
+    "list": "metadata.imaging.images",
+    "member": "archive_path",
+    "media_type_field": "media_type",
+    "media_type": "image/tiff"
+   }
+  },
+  {
+   "id": "image_files_entry",
+   "primitive": "image_index_entry",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "Imaging profile check 8: every image in metadata.imaging.images is listed in files[] with entity_type 'image' and data_kind 'other'. Review 2026-09-30 A3: the converter listed auto-discovered optical images as data_kind 'proprietary'. WARNING, as the profile says for image problems; the member's Core checksum is member_checksum_sha512's concern.",
+   "params": {
+    "list": "metadata.imaging.images",
+    "member": "archive_path",
+    "entity_type": "image",
+    "data_kind": "other"
+   }
+  },
+  {
+   "id": "imaging_mz_range_stored",
+   "primitive": "imaging_mz_range",
+   "severity": "warning",
+   "recovery": "rederive",
+   "doc": "metadata.imaging.mz_range, when present, is the object {min, max} and equals the m/z range of the stored arrays of the positioned MS1 spectra (imaging profile check 7, owner decision D10; mzpeak-convert 0.17.0 wrote an array over every spectrum, and a pre-0.17.1 rewrite could carry a range of spectra the archive no longer holds).",
+   "params": {}
+  }
+ ]
 }

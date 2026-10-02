@@ -452,6 +452,18 @@ def build_all(out_root):
          imaging={**img, "images": [_image_entry(payload=NOT_TIFF_BYTES)]},
          members={"images/image_0000.tiff": NOT_TIFF_BYTES}, extra_metadata=_grid())                   # bytes match hash; only magic trips
 
+    # imaging profile check 7, m/z half (catalog 1.19, D10): mz_range = {min, max} of the STORED m/z
+    # of positioned MS1 spectra. Fixture spectra are all positioned MS1; MZ spans [100, 400].
+    case("pass", "imaging_mz_range_ok", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         quiet="imaging_mz_range_stored",
+         imaging={**img, "mz_range": {"min": 100.0, "max": 400.0}}, extra_metadata=_grid())
+    case("pass", "imaging_mz_range_wrong", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         warn="imaging_mz_range_stored",
+         imaging={**img, "mz_range": {"min": 50.0, "max": 400.0}}, extra_metadata=_grid())             # stored min is 100
+    case("pass", "imaging_mz_range_array", _meta(coords=True), _data(S, MZ, IN), "PASS",
+         warn="imaging_mz_range_stored",
+         imaging={**img, "mz_range": [100.0, 400.0]}, extra_metadata=_grid())                          # 0.17.0 array shape
+
     # imaging profile, spec PR #25 "What a validator checks" (review 2026-09-30: the validator checked none of these)
     # 1: positions without the marker; coordinate_base other than 1
     case("fail", "imaging_positions_unmarked", imeta, idata, "FAIL", "imaging_marker", extra_metadata=_grid())
